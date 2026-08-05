@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>发票 / 火车票 / 合同 批量重命名工具</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div class="container">
+
+  <!-- 标题 -->
+  <h1>🧾 发票 / 火车票 / 合同 批量重命名</h1>
+  <p class="subtitle">支持 PDF、JPG、PNG、BMP、DOCX 格式，自动识别类型并智能重命名</p>
+
+  <!-- 拖拽区域 -->
+  <div id="dropZone" class="drop-zone">
+    <span class="drop-icon">📂</span>
+    <p>拖拽发票 / 火车票 / 合同到这里，或点击选择文件</p>
+    <button type="button" id="pickFileBtn" class="btn-primary">选择文件</button>
+    <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.docx,.zip">
+    <p id="fileHint" class="drop-hint">未选择文件</p>
+    <p class="drop-hint-sub">支持多选，单次建议不超过 20 个文件</p>
+  </div>
+
+  <!-- 高精度开关 -->
+  <div class="settings-bar">
+    <label class="hp-label">
+      <input type="checkbox" id="highPrecisionToggle">
+      <span>🎯 高精度模式（EasyOCR 后端补刀）</span>
+    </label>
+    <input type="text" id="highPrecisionUrl" class="hp-url" placeholder="粘贴 Replit / 服务器地址，如 https://xxx.replit.dev">
+  </div>
+
+  <!-- 进度条 -->
+  <div id="progress" class="progress hidden"></div>
+
+  <!-- 统计信息 -->
+  <div class="stats-bar" id="statsBar" style="display:none;">
+    <span class="stat-item stat-invoice">🧾 发票: <span class="stat-num" id="statInvoice">0</span></span>
+    <span class="stat-item stat-train">🚄 火车票: <span class="stat-num" id="statTrain">0</span></span>
+    <span class="stat-item stat-contract">📋 合同: <span class="stat-num" id="statContract">0</span></span>
+    <span class="stat-item stat-error">⚠️ 失败: <span class="stat-num" id="statError">0</span></span>
+  </div>
+
+  <!-- 表格 -->
+  <div class="table-wrapper">
+    <table id="resultTable">
+      <thead>
+        <tr>
+          <th>原文件名</th>
+          <th>新文件名</th>
+          <th>类型</th>
+          <th>日期</th>
+          <th>金额</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="resultBody">
+        <tr>
+          <td colspan="6">
+            <div class="empty-state">
+              <span class="empty-icon">📄</span>
+              <p>还没有文件，请拖拽或选择文件开始识别</p>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 操作按钮 -->
+  <div class="actions">
+    <button id="downloadZip" class="btn-primary">📦 下载 ZIP</button>
+    <button id="downloadCsv" class="btn-secondary">📊 下载 CSV</button>
+    <button id="downloadExcel" class="btn-secondary">📈 下载 Excel</button>
+  </div>
+
+</div>
+
+<!-- 编辑弹窗 -->
+<div id="editModal" class="modal hidden">
+  <div class="modal-content">
+    <h3>✏️ 编辑文件信息</h3>
+    <label>原文件名</label>
+    <input type="text" id="editOrig" disabled>
+    <label>新文件名</label>
+    <input type="text" id="editNew" disabled>
+    <label>日期</label>
+    <input type="text" id="editDate" placeholder="如 2025-06-08">
+    <label>金额</label>
+    <input type="text" id="editAmount" placeholder="如 265.35">
+    <label>购买方 / 甲方</label>
+    <input type="text" id="editBuyer">
+    <label>销售方 / 乙方</label>
+    <input type="text" id="editSupplier">
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeEdit()">取消</button>
+      <button class="btn-save" onclick="saveEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 提示 -->
+<div id="toast" class="toast hidden"></div>
+
+<!-- ========== 第三方库 ========== -->
+<!-- Tesseract.js (OCR) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<!-- JSZip -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
+<!-- SheetJS (Excel 导出) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18/dist/xlsx.full.min.js"></script>
+
+<!-- PDF.js (PDF 渲染) -->
+<script type="module">
+import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs';
+window.pdfjsLib = pdfjsLib;
+window.dispatchEvent(new Event('pdfjs-ready'));
+</script>
+
+<!-- ========== 业务脚本（ES Module，严格按顺序） ========== -->
+<script type="module" src="extractors.js"></script>
+<script type="module" src="filenames.js"></script>
+<script type="module" src="export.js"></script>
+<script type="module" src="highPrecision.js"></script>
+<script type="module" src="app.js"></script>
+
+</body>
+</html>
