@@ -1,5 +1,5 @@
 /* ============================================================
-   app.js —— 主控制逻辑（严格对齐 filenames.js 三条命名规则）
+   app.js —— 主控制逻辑（修订：确保 docType 准确传递）
    ============================================================ */
 
 // ---------- 工具 ----------
@@ -19,6 +19,16 @@ function extractFromFilename(stem) {
     const y = 2000 + (+m[1]), mo = +m[2], d = +m[3];
     if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
       result.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    }
+  }
+
+  // 支持 "6.8" 或 "6-8" 格式（补全年份为当前年份）
+  const md = s.match(/(?:^|[\s\-_.])(\d{1,2})[.\-](\d{1,2})(?:$|[\s\-_.])/);
+  if (md && !result.date) {
+    const mo = +md[1], d = +md[2];
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      const year = new Date().getFullYear();
+      result.date = `${year}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     }
   }
 
@@ -66,15 +76,27 @@ async function handleFiles(files) {
         if (!data[k] && fnFields[k]) data[k] = fnFields[k];
       }
 
-      // ✅ 统一命名（调用 filenames.js）
-      const docType = window.docType ? window.docType(data._raw_text) : type;
+      // 确定文档类型（中文）
+      let docType = window.FN.docType(data._raw_text || '');
+      // 若 OCR 文本为空，用文件名猜测
+      if (!data._raw_text || data._raw_text.length < 5) {
+        docType = guessTypeFromName(file.name);
+      }
+
+      // 如果是火车票或飞机票，但从文件名猜测是另一个，以文件名优先？实际可保留检测结果，但可调整
+      // 这里我们信任 docType 检测，但若检测为“发票”而文件名含“机票”，可修正
+      const guessed = guessTypeFromName(file.name);
+      if (guessed === '飞机票' && docType === '发票') docType = '飞机票';
+      if (guessed === '火车票' && docType === '发票') docType = '火车票';
+
+      // 统一命名（调用 filenames.js）
       const newName = FN.generateFilename(data, docType, getExt(file.name));
 
       results.push({ file, data, type: docType, newName });
       addRow(i, file.name, newName, docType, data);
 
     } catch (err) {
-      // ✅ OCR 完全失败时：兜底命名
+      // OCR 完全失败时：兜底命名
       const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
       const fallbackData = {
         date: fnFields.date || '',
@@ -103,13 +125,13 @@ async function handleFiles(files) {
   hideProgress();
 }
 
-// 从文件名猜测类型（兜底用）
+// 从文件名猜测类型（兜底用，增强版）
 function guessTypeFromName(name) {
   const n = String(name).toLowerCase();
-  if (/飞机票|航班|机票|行程单|flight|air/.test(n)) return '飞机票';
+  if (/飞机票|航班|机票|行程单|flight|air|飞猪/.test(n)) return '飞机票';
   if (/火车票|高铁|动车|列车|g\d+|d\d+|t\d+|k\d+/.test(n)) return '火车票';
-  if (/住宿|宾馆|酒店|旅店/.test(n)) return '住宿费';
-  if (/打车|滴滴|出租车|网约车|车费/.test(n)) return '打车票';
+  if (/住宿|宾馆|酒店|旅店|如家|汉庭/.test(n)) return '住宿费';
+  if (/打车|滴滴|出租车|网约车|车费|t3/.test(n)) return '打车票';
   if (/合同|协议|甲方|乙方/.test(n)) return '合同';
   return '发票';
 }
@@ -211,7 +233,7 @@ window.saveEdit = function () {
   item.data.supplier = document.getElementById('editSupplier').value;
   item.data.place = document.getElementById('editPlace').value;
 
-  const docType = window.docType ? window.docType(item.data._raw_text) : item.type;
+  const docType = item.type; // 保留原类型
   item.newName = FN.generateFilename(item.data, docType, getExt(item.file.name));
 
   document.querySelector(`tr[data-index="${currentEditIndex}"] .editable`).textContent = item.newName;
