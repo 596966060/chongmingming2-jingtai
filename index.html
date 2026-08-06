@@ -19,9 +19,10 @@
     <span class="drop-icon">📂</span>
     <p>拖拽发票 / 火车票 / 合同到这里，或点击选择文件</p>
     <button type="button" id="pickFileBtn" class="btn-primary">选择文件</button>
-    <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.docx,.zip">
     <p id="fileHint" class="drop-hint">未选择文件</p>
     <p class="drop-hint-sub">支持多选，单次建议不超过 20 个文件</p>
+    <!-- 隐藏的 file input（不能用 display:none，用视觉隐藏） -->
+    <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.docx,.zip">
   </div>
 
   <!-- 高精度开关 -->
@@ -96,8 +97,8 @@
     <label>销售方 / 乙方</label>
     <input type="text" id="editSupplier">
     <div class="modal-actions">
-      <button class="btn-cancel" onclick="closeEdit()">取消</button>
-      <button class="btn-save" onclick="saveEdit()">保存</button>
+      <button class="btn-cancel" onclick="FN_closeEdit()">取消</button>
+      <button class="btn-save" onclick="FN_saveEdit()">保存</button>
     </div>
   </div>
 </div>
@@ -105,29 +106,18 @@
 <!-- Toast 提示 -->
 <div id="toast" class="toast hidden"></div>
 
-<!-- ========== 第三方库 ========== -->
-<!-- Tesseract.js (OCR) -->
+<!-- ========== 第三方库（按依赖顺序） ========== -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<!-- JSZip -->
 <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
-<!-- SheetJS (Excel 导出) -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs" type="module"></script>
 
-<!-- PDF.js (PDF 渲染) -->
-<script type="module">
-import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs';
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs';
-window.pdfjsLib = pdfjsLib;
-window.dispatchEvent(new Event('pdfjs-ready'));
-</script>
-
-<!-- ========== 业务脚本（ES Module，严格按顺序） ========== -->
-<script type="module" src="extractors.js"></script>
-<script type="module" src="filenames.js"></script>
-<script type="module" src="export.js"></script>
-<script type="module" src="highPrecision.js"></script>
-<script type="module" src="app.js"></script>
+<!-- ========== 业务脚本（非模块，全局变量，按依赖顺序） ========== -->
+<script src="filenames.js"></script>
+<script src="extractors.js"></script>
+<script src="export.js"></script>
+<script src="highPrecision.js"></script>
+<script src="app.js"></script>
 
 </body>
 </html>
