@@ -1,5 +1,5 @@
 /* ============================================================
-   filenames.js —— 严格按用户三条命名规则
+   filenames.js —— 严格按用户三条命名规则（2026-08-06 修订）
    ============================================================ */
 
 // ---------- 工具 ----------
@@ -18,14 +18,20 @@ function fmtAmt(val) {
     : n.toFixed(2) + '元';
 }
 
-// ---------- 类型判断 ----------
+// ---------- 类型判断（增强版，供外部调用） ----------
 function docType(text) {
   const t = String(text || '').toLowerCase();
-  if (/飞机票|航班|登机牌|行程单|机票|air|flight/.test(t)) return '飞机票';
-  if (/火车票|高铁|动车|列车|铁路|g\d+|d\d+|t\d+|k\d+/.test(t)) return '火车票';
-  if (/住宿|宾馆|酒店|旅店|入住/.test(t)) return '住宿费';
-  if (/打车|出租车|网约车|滴滴|车费|用车/.test(t)) return '打车票';
-  if (/合同|协议|甲方|乙方|买方|卖方/.test(t)) return '合同';
+  // 飞机票
+  if (/飞机票|航班|登机牌|行程单|机票|air|flight|飞猪|携程.*机票/.test(t)) return '飞机票';
+  // 火车票
+  if (/火车票|高铁|动车|列车|铁路|g\d+|d\d+|t\d+|k\d+|12306/.test(t)) return '火车票';
+  // 住宿费
+  if (/住宿|宾馆|酒店|旅店|入住|如家|汉庭|全季/.test(t)) return '住宿费';
+  // 打车票
+  if (/打车|出租车|网约车|滴滴|车费|用车|T3出行|曹操出行/.test(t)) return '打车票';
+  // 合同
+  if (/合同|协议|甲方|乙方|买方|卖方|采购合同|服务合同/.test(t)) return '合同';
+  // 默认发票
   return '发票';
 }
 
@@ -42,36 +48,39 @@ function abbrParty(name) {
 }
 
 // ---------- 1️⃣ 住宿 / 打车 ----------
-function genConsume(data, ext) {
-  const date   = data.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date) ? data.date : '0000-01-01';
+function genConsume(data, docTypeStr, ext) {
+  const date   = (data.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) ? data.date : '';
   const seller = (data.supplier || '').slice(0, 6);
   const buyer  = (data.buyer    || '').slice(0, 6);
-  const type   = docType(data._raw_text) === '住宿费' ? '住宿费' : '打车票';
+  const type   = docTypeStr;   // 直接使用传入的 “住宿费” 或 “打车票”
   const place  = (data.place || data.from_station || '').slice(0, 10);
   const amount = fmtAmt(data.amount);
 
   const parts = [date, seller, buyer, type, place, amount].filter(Boolean);
   let name = collapse_(cleanIllegal(parts.join('_')));
+  // 若日期缺失，用 '0000-01-01' 占位（避免空段）
+  if (!date) name = '0000-01-01_' + name.replace(/^_+/, '');
   return (name || `consume_${Date.now()}`) + ext;
 }
 
 // ---------- 2️⃣ 飞机票 / 火车票 ----------
-function genTraffic(data, ext) {
-  const date   = data.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date) ? data.date : '0000-01-01';
+function genTraffic(data, docTypeStr, ext) {
+  const date   = (data.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) ? data.date : '';
   const from   = (data.from_station || '').slice(0, 10);
   const to     = (data.to_station   || '').slice(0, 10);
-  const route  = from || to ? `${from}-${to}` : '';
-  const type   = docType(data._raw_text) === '飞机票' ? '飞机票' : '火车票';
+  const route  = (from && to) ? `${from}-${to}` : (from || to || '');
+  const type   = docTypeStr;   // “飞机票” 或 “火车票”
   const amount = fmtAmt(data.amount);
 
   const parts = [date, route, type, amount].filter(Boolean);
   let name = collapse_(cleanIllegal(parts.join('_')));
+  if (!date) name = '0000-01-01_' + name.replace(/^_+/, '');
   return (name || `traffic_${Date.now()}`) + ext;
 }
 
 // ---------- 3️⃣ 合同 ----------
-function genContract(data, ext) {
-  const date   = data.sign_date && /^\d{4}-\d{2}-\d{2}$/.test(data.sign_date) ? data.sign_date : '0000-01-01';
+function genContract(data, docTypeStr, ext) {
+  const date   = (data.sign_date && /^\d{4}-\d{2}-\d{2}$/.test(data.sign_date)) ? data.sign_date : '';
   const name   = (data.contract_name || '合同').slice(0, 15);
   const a      = abbrParty(data.party_a);
   const b      = abbrParty(data.party_b);
@@ -79,15 +88,18 @@ function genContract(data, ext) {
 
   const parts = [date, name, a, b, amount].filter(Boolean);
   let fname = collapse_(cleanIllegal(parts.join('_')));
+  if (!date) fname = '0000-01-01_' + fname.replace(/^_+/, '');
   return (fname || `contract_${Date.now()}`) + ext;
 }
 
 // ---------- 统一出口 ----------
-function generateFilename(data, docType, ext) {
-  if (docType === '合同') return genContract(data, ext);
-  if (docType === '飞机票' || docType === '火车票') return genTraffic(data, ext);
-  return genConsume(data, ext);
+function generateFilename(data, docTypeStr, ext) {
+  // 根据传入的类型分发
+  if (docTypeStr === '合同') return genContract(data, docTypeStr, ext);
+  if (docTypeStr === '飞机票' || docTypeStr === '火车票') return genTraffic(data, docTypeStr, ext);
+  // 其余（发票、住宿费、打车票）均走 genConsume，但需传递具体类型
+  return genConsume(data, docTypeStr, ext);
 }
 
 // 暴露
-window.FN = { generateFilename };
+window.FN = { generateFilename, docType };
