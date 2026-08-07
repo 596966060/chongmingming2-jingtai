@@ -671,7 +671,7 @@ function extractFromFilename(stem) {
         result.date = result.date || (y + '-' + String(mo).padStart(2,'0') + '-' + String(d).padStart(2,'0'));
       }
     }
-    // 新增：支持 "6.8" 或 "6-8" 格式（如住宿费发票-6.8-广德）
+    // 支持 "6.8" 或 "6-8" 格式
     else if (/^(\d{1,2})[.\-](\d{1,2})$/.test(p)) {
       var mo = parseInt(RegExp.$1), d = parseInt(RegExp.$2);
       if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
@@ -679,11 +679,26 @@ function extractFromFilename(stem) {
         result.date = result.date || (year + '-' + String(mo).padStart(2,'0') + '-' + String(d).padStart(2,'0'));
       }
     }
+    // 支持 "2025-06-08" 或 "2025/06/08"
+    else if (/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.test(p)) {
+      var y = parseInt(RegExp.$1), mo = parseInt(RegExp.$2), d = parseInt(RegExp.$3);
+      if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+        result.date = result.date || (y + '-' + String(mo).padStart(2,'0') + '-' + String(d).padStart(2,'0'));
+      }
+    }
     // 中文片段（公司名 / 地点）
     else if (/[\u4e00-\u9fa5]/.test(p) && p.length >= 4) {
-      result.buyer = result.buyer || p;
+      if (!result.buyer) result.buyer = p;
+      else if (!result.supplier && p !== result.buyer) result.supplier = p;
+      if (/站|路|酒店|宾馆/.test(p) && !result.place) result.place = p;
+    }
+    // 合同名称
+    else if (/(?:合同|协议|采购|服务)/.test(p) && p.length > 2) {
+      if (!result.contract_name) result.contract_name = p;
     }
   }
+  // 如果只有 buyer，同时将其赋给 supplier（兜底）
+  if (result.buyer && !result.supplier) result.supplier = result.buyer;
   return result;
 }
 
