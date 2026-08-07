@@ -1,16 +1,17 @@
 /**
  * extractors.js
  * 核心抽取逻辑 —— 逐行对齐原始 app.py（0804 完整版）
+ * 修订：增强 detectDocType 返回中文类型，extractFromFilename 支持 "月.日" 格式
  *
  * 挂载到全局: window.EX
  *
  * 包含：
- *   - detectDocType()        文档类型判断（火车票 > 合同 > 发票）
+ *   - detectDocType()        文档类型判断（火车票 > 合同 > 发票，返回中文）
  *   - extractInvoiceFields()  发票字段抽取
  *   - extractTrainFields()    火车票字段抽取
  *   - extractContractFields() 合同字段抽取
  *   - extractFromFile()       OCR 入口（PDF 多页拼接 / 图片 / DOCX 降级）
- *   - _extractFromFilename()  从文件名补充字段
+ *   - extractFromFilename()   从文件名补充字段（支持 6.8 格式）
  */
 
 (function (global) {
@@ -26,7 +27,7 @@ function cleanCompany(s) {
   s = s.split(/(?:销售方|购买方)\s*名称/)[0];
 
   // 截断在纳税人/地址/开户/电话/监制机关处
-  s = s.split(/(?:纳税人|识别号|地址[、，,]|开户|电话|统一社会|监制机关|主管税务)/)[0];
+  s = s.split(/(?:纳税人|识别号|地址[、，,]|电话|统一社会|监制机关|主管税务)/)[0];
 
   // 去掉末尾长数字串（税号）
   s = s.replace(/\s*\d{8,}.*$/, '');
@@ -69,18 +70,27 @@ var CONTRACT_STRONG = /本\s*合\s*同|本\s*协\s*议|合\s*同\s*编\s*号|甲
 // 弱车次号检测（去掉 \b，中文无 word boundary）
 var TRAIN_NUMBER_RE = /(?<![A-Z\d])([GDTZKCY]\d{1,4})(?!\d)/;
 
+/**
+ * detectDocType —— 修订版，返回中文类型
+ */
 function detectDocType(text) {
-  if (!text) return 'invoice';
+  if (!text) return '发票';
   // 1. 强火车票关键词（优先级最高）
-  if (TRAIN_KEYWORDS.test(text)) return 'train';
-  // 2. 合同强关键词
+  if (TRAIN_KEYWORDS.test(text)) return '火车票';
+  // 2. 飞机票关键词
+  if (/航空运输电子客票|行程单|旅客姓名|电子客票|登机牌|航班|机票|飞猪|携程.*机票/.test(text)) return '飞机票';
+  // 3. 住宿
+  if (/住宿|宾馆|酒店|旅店|入住|如家|汉庭|全季/.test(text)) return '住宿费';
+  // 4. 打车
+  if (/出租汽车|出租车发票|计价器|滴滴|T3出行|曹操出行|网约车/.test(text)) return '打车票';
+  // 5. 合同强关键词
   var hasA = CONTRACT_PARTY_A.test(text);
   var hasB = CONTRACT_PARTY_B.test(text);
   var hasS = CONTRACT_STRONG.test(text);
-  if (hasS || (hasA && hasB)) return 'contract';
-  // 3. 弱车次号检测
-  if (TRAIN_NUMBER_RE.test(text)) return 'train';
-  return 'invoice';
+  if (hasS || (hasA && hasB)) return '合同';
+  // 6. 弱车次号检测
+  if (TRAIN_NUMBER_RE.test(text)) return '火车票';
+  return '发票';
 }
 
 /* ================= 文本预处理 ================= */
@@ -632,8 +642,7 @@ function extractContractFields(text) {
   for (var ai = 0; ai < amtPats.length; ai++) {
     var m = text.match(amtPats[ai]);
     if (m) {
-      var unit = (m[2] || ''); // 注意：正则只有一个捕获组时 m[2] 可能 undefined
-      // 修正：有些正则有两个捕获组
+      var unit = (m[2] || '');
       var rawNum = m[1];
       var unitStr = '';
       if (m.length >= 3 && m[2]) unitStr = m[2];
@@ -645,7 +654,7 @@ function extractContractFields(text) {
   return result;
 }
 
-/* ================= 从文件名补充字段 ================= */
+/* ================= 从文件名补充字段（修订：支持 月.日） ================= */
 
 function extractFromFilename(stem) {
   var result = {};
@@ -653,13 +662,24 @@ function extractFromFilename(stem) {
   var parts = stem.split(/[_\-\s]/);
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
+    // 发票号（15-25位数字）
     if (/^\d{15,25}$/.test(p)) result.invoice_number = result.invoice_number || p;
+    // 8位日期 20250608
     else if (/^20\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/.test(p)) {
       var y = parseInt(p.substring(0,4)), mo = parseInt(p.substring(4,6)), d = parseInt(p.substring(6,8));
       if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
         result.date = result.date || (y + '-' + String(mo).padStart(2,'0') + '-' + String(d).padStart(2,'0'));
       }
     }
+    // 新增：支持 "6.8" 或 "6-8" 格式（如住宿费发票-6.8-广德）
+    else if (/^(\d{1,2})[.\-](\d{1,2})$/.test(p)) {
+      var mo = parseInt(RegExp.$1), d = parseInt(RegExp.$2);
+      if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+        var year = new Date().getFullYear();
+        result.date = result.date || (year + '-' + String(mo).padStart(2,'0') + '-' + String(d).padStart(2,'0'));
+      }
+    }
+    // 中文片段（公司名 / 地点）
     else if (/[\u4e00-\u9fa5]/.test(p) && p.length >= 4) {
       result.buyer = result.buyer || p;
     }
@@ -757,14 +777,14 @@ function extractFromFile(file) {
       text = t || '';
       var type = detectDocType(text);
       var data;
-      if (type === 'train')       data = extractTrainFields(text, stem);
-      else if (type === 'contract') data = extractContractFields(text);
+      if (type === '火车票')       data = extractTrainFields(text, stem);
+      else if (type === '合同') data = extractContractFields(text);
       else                          data = extractInvoiceFields(text, stem);
 
-      if (type === 'invoice') extractSpecialInvoice(text, data);
+      if (type === '发票') extractSpecialInvoice(text, data);
 
       // 从文件名补充缺失字段
-      if (type === 'invoice') {
+      if (type === '发票' || type === '住宿费' || type === '打车票') {
         var f = extractFromFilename(stem);
         if (!data.date && f.date) data.date = f.date;
         if (!data.invoice_number && f.invoice_number) data.invoice_number = f.invoice_number;
