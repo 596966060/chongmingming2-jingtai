@@ -1,88 +1,75 @@
 /**
  * extractors.js
- * 核心抽取逻辑 —— 逐行对齐原始 app.py（0804 完整版）
- * 修订：增强 detectDocType 返回中文类型，extractFromFilename 支持 "月.日" 格式
+ * 核心抽取逻辑 —— 修复版
+ * 修复：T3出行识别、飞机票识别、住宿地点提取、OCR容错、docx支持
  *
  * 挂载到全局: window.EX
- *
- * 包含：
- *   - detectDocType()        文档类型判断（火车票 > 合同 > 发票，返回中文）
- *   - extractInvoiceFields()  发票字段抽取
- *   - extractTrainFields()    火车票字段抽取
- *   - extractContractFields() 合同字段抽取
- *   - extractFromFile()       OCR 入口（PDF 多页拼接 / 图片 / DOCX 降级）
- *   - extractFromFilename()   从文件名补充字段（支持 6.8 格式）
  */
 
 (function (global) {
 
 /* ================= 工具函数 ================= */
 
-/** 公司名清洗（对齐 Python clean_company） */
 function cleanCompany(s) {
   if (!s) return null;
   s = String(s).trim();
-
   // 截断在另一方标签处
   s = s.split(/(?:销售方|购买方)\s*名称/)[0];
-
   // 截断在纳税人/地址/开户/电话/监制机关处
   s = s.split(/(?:纳税人|识别号|地址[、，,]|电话|统一社会|监制机关|主管税务)/)[0];
-
   // 去掉末尾长数字串（税号）
   s = s.replace(/\s*\d{8,}.*$/, '');
-
   // 去掉括号内企业类型说明
   s = s.replace(/\s*[（(]\s*(?:个体工商户|个人独资|自然人|个人)\s*[）)]/, '');
-
   // 去掉末尾标点
   s = s.replace(/[：:\s，,。.]+$/g, '').trim();
-
   // 必须含中文
   if (!/[\u4e00-\u9fa5]/.test(s)) return null;
   if (s.length < 2 || s.length > 60) return null;
-
   // 拒绝纯后缀
   if (/^(?:有限(?:责任)?公司|股份有限公司|集团公司|有限公司|责任公司|公司)$/.test(s)) return null;
-
   // 拒绝发票字段标签词
   var LABEL_WORDS = ['名称', '金额', '税额', '地址', '电话', '合计', '税率',
     '备注', '开票人', '识别号', '统一社会', '纳税人', '规格',
-    '项目', '单位', '数量', '单价', '备注', '信息'];
+    '项目', '单位', '数量', '单价', '信息'];
   if (LABEL_WORDS.indexOf(s) !== -1) return null;
-
   // 拒绝政府机关
   if (/税务[局所]|国家税务|地方税务|稽查局|国税局|地税局|财政局|监察局|市场监督|行政管理局|公安局|政府|监制机关|主管税务/.test(s)) return null;
-
   return s;
 }
 
 /* ================= 文档类型判断 ================= */
 
-// 火车票关键词集合（对齐 Python _TRAIN_KEYWORDS）
+// T3出行/网约车关键词（优先级高于火车票）
+var T3_KEYWORDS = /T3出行|滴滴|滴滴出行|曹操出行|高德打车|美团打车|网约车|打车.*发票|出租汽车.*发票|滴滴.*发票|曹操.*发票/;
+
+// 火车票关键词
 var TRAIN_KEYWORDS = /车\s*次|检\s*票|候\s*车|动\s*车|高\s*铁|火\s*车\s*票|硬\s*卧|软\s*卧|硬\s*座|二\s*等\s*座|一\s*等\s*座|商\s*务\s*座|无\s*座|出\s*发\s*站|到\s*达\s*站|网络购票|铁路电子客票|中国铁路|12306|票价[：:\s]*[¥￥]?\d|列\s*车\s*号|乘\s*车\s*日|席\s*别|始\s*发\s*站|终\s*到\s*站|补\s*票|开\s*车\s*时\s*间|出\s*发\s*时\s*间|铁\s*路\s*客\s*票/;
+
+// 飞机票关键词
+var PLANE_KEYWORDS = /航空运输电子客票|行程单|旅客姓名|电子客票|登机牌|航班|机票|飞猪|携程.*机票|airline|flight/i;
+
+// 住宿关键词
+var HOTEL_KEYWORDS = /住宿|宾馆|酒店|旅店|入住|如家|汉庭|全季|民宿|客房|房费/;
 
 // 合同关键词
 var CONTRACT_PARTY_A = /甲\s*方|买\s*方|委\s*托\s*方|发\s*包\s*方|采\s*购\s*方|招\s*标\s*人/;
 var CONTRACT_PARTY_B = /乙\s*方|卖\s*方|承\s*包\s*方|承\s*接\s*方|供\s*货\s*方|中\s*标\s*人/;
 var CONTRACT_STRONG = /本\s*合\s*同|本\s*协\s*议|合\s*同\s*编\s*号|甲\s*乙\s*双\s*方|买\s*卖\s*双\s*方|委\s*托\s*方|发\s*包\s*方|合\s*同\s*金\s*额|合\s*同\s*总\s*额|合\s*同\s*总\s*价|平\s*等\s*自\s*愿|协\s*商\s*一\s*致|合\s*同\s*协\s*议\s*书|货\s*物\s*采\s*购\s*合\s*同|采\s*购\s*合\s*同|服\s*务\s*合\s*同|工\s*程\s*合\s*同|建\s*设\s*工\s*程\s*合\s*同/;
 
-// 弱车次号检测（去掉 \b，中文无 word boundary）
+// 弱车次号检测
 var TRAIN_NUMBER_RE = /(?<![A-Z\d])([GDTZKCY]\d{1,4})(?!\d)/;
 
-/**
- * detectDocType —— 修订版，返回中文类型
- */
 function detectDocType(text) {
   if (!text) return '发票';
-  // 1. 强火车票关键词（优先级最高）
+  // 1. T3出行/网约车（优先级最高，避免被火车票吞掉）
+  if (T3_KEYWORDS.test(text)) return '打车票';
+  // 2. 飞机票
+  if (PLANE_KEYWORDS.test(text)) return '飞机票';
+  // 3. 火车票
   if (TRAIN_KEYWORDS.test(text)) return '火车票';
-  // 2. 飞机票关键词
-  if (/航空运输电子客票|行程单|旅客姓名|电子客票|登机牌|航班|机票|飞猪|携程.*机票/.test(text)) return '飞机票';
-  // 3. 住宿
-  if (/住宿|宾馆|酒店|旅店|入住|如家|汉庭|全季/.test(text)) return '住宿费';
-  // 4. 打车
-  if (/出租汽车|出租车发票|计价器|滴滴|T3出行|曹操出行|网约车/.test(text)) return '打车票';
+  // 4. 住宿
+  if (HOTEL_KEYWORDS.test(text)) return '住宿费';
   // 5. 合同强关键词
   var hasA = CONTRACT_PARTY_A.test(text);
   var hasB = CONTRACT_PARTY_B.test(text);
@@ -95,7 +82,6 @@ function detectDocType(text) {
 
 /* ================= 文本预处理 ================= */
 
-/** 对齐 Python _normalize_text：修复 OCR 拆行 & 统一标签 */
 function normalizeText(text) {
   if (!text) return '';
   var lines = text.split('\n');
@@ -104,10 +90,10 @@ function normalizeText(text) {
   while (i < lines.length) {
     var raw = lines[i];
     var stripped = raw.trim();
-    // 向前看
+    // 向前看：合并"购买方"+"名称"行
     if (i + 1 < lines.length) {
       var nxt = lines[i + 1].trim();
-      var nxtIsName = /^[名1l][称称][：:﹕]/.test(nxt);
+      var nxtIsName = /^[名1l][称称][：:]/.test(nxt);
       if (nxtIsName) {
         if (/^购(?:买方?|方)?(?:信息)?$/.test(stripped)) {
           out.push('购买方' + nxt);
@@ -126,6 +112,10 @@ function normalizeText(text) {
     stripped = stripped.replace(/购货单位名称/g, '购买方名称');
     stripped = stripped.replace(/销货单位[：:]/g, '销售方名称：');
     stripped = stripped.replace(/购货单位[：:]/g, '购买方名称：');
+    // OCR 误读修复：广德 → 广德（保持），但修复其他常见误读
+    stripped = stripped.replace(/[1l]称[：:]/g, '名称：');
+    stripped = stripped.replace(/销告?方/g, '销售方');
+    stripped = stripped.replace(/购告?方/g, '购买方');
     out.push(stripped);
     i++;
   }
@@ -143,7 +133,8 @@ function extractInvoiceFields(text, stem) {
     amount: null,
     tax_free_amount: null,
     tax_amount: null,
-    invoice_type: null
+    invoice_type: null,
+    place: null  // 新增：地点
   };
 
   text = normalizeText(text);
@@ -245,7 +236,6 @@ function extractInvoiceFields(text, stem) {
       }
     }
     if (companyLines.length) {
-      // 去掉已找到的一方
       var filtered = [];
       for (var fi = 0; fi < companyLines.length; fi++) {
         if (companyLines[fi] !== result.buyer && companyLines[fi] !== result.supplier) {
@@ -344,17 +334,26 @@ function extractSpecialInvoice(text, result) {
     if (m) result.buyer = m[1].trim();
     var dep = text.match(/出发地[：:\s]+([^\n\s]{2,8})/);
     var arr = text.match(/目的地[：:\s]+([^\n\s]{2,8})/);
-    if (dep && arr) result.supplier = dep[1].trim() + '-' + arr[1].trim();
-    else if (dep) result.supplier = dep[1].trim();
+    if (dep && arr) {
+      result.from_station = dep[1].trim();
+      result.to_station = arr[1].trim();
+    } else if (dep) {
+      result.from_station = dep[1].trim();
+    }
     var m2 = text.match(/(?:票价|合计)[：:\s]*[¥￥]?\s*(\d+(?:\.\d{1,2})?)/);
     if (m2) result.amount = parseFloat(m2[1]).toFixed(2);
     return true;
   }
-  // 出租车
-  if (/出租汽车|出租车发票|计价器/.test(text)) {
-    result.invoice_type = '出租车发票';
-    var m3 = text.match(/(?:金额|合计)[：:\s]*[¥￥]?\s*(\d+(?:\.\d{1,2})?)/);
+  // 出租车/打车票
+  if (/出租汽车|出租车发票|计价器|T3出行|滴滴|曹操出行|网约车|打车/.test(text)) {
+    result.invoice_type = '打车票';
+    var m3 = text.match(/(?:金额|合计|车费)[：:\s]*[¥￥]?\s*(\d+(?:\.\d{1,2})?)/);
     if (m3) result.amount = parseFloat(m3[1]).toFixed(2);
+    // 尝试提取出发地/到达地
+    var fromM = text.match(/(?:出发|起点|上车地点|起始)[：:\s]*([^\n]{2,10})/);
+    var toM = text.match(/(?:到达|终点|下车地点|目的)[：:\s]*([^\n]{2,10})/);
+    if (fromM) result.from_station = fromM[1].trim();
+    if (toM) result.to_station = toM[1].trim();
     return true;
   }
   // 定额发票
@@ -561,7 +560,7 @@ function extractContractFields(text) {
     for (var i2 = 0; i2 < Math.min(10, lines.length); i2++) {
       var c = lines[i2].replace(/[《》【】\[\]（(）)\s]+/g, '');
       if (c.length > 2 && c.length <= 20 && /合同|协议书/.test(c)) {
-        if (!['合同','协议书','协议','本合同','本协议'].includes(c)) {
+        if (['合同','协议书','协议','本合同','本协议'].indexOf(c) === -1) {
           result.contract_name = c; break;
         }
       }
@@ -642,11 +641,8 @@ function extractContractFields(text) {
   for (var ai = 0; ai < amtPats.length; ai++) {
     var m = text.match(amtPats[ai]);
     if (m) {
-      var unit = (m[2] || '');
-      var rawNum = m[1];
-      var unitStr = '';
-      if (m.length >= 3 && m[2]) unitStr = m[2];
-      result.amount = parseAmt(rawNum, unitStr);
+      var unitStr = (m.length >= 3 && m[2]) ? m[2] : '';
+      result.amount = parseAmt(m[1], unitStr);
       break;
     }
   }
@@ -654,12 +650,12 @@ function extractContractFields(text) {
   return result;
 }
 
-/* ================= 从文件名补充字段（修订：支持 月.日） ================= */
+/* ================= 从文件名补充字段 ================= */
 
 function extractFromFilename(stem) {
   var result = {};
   if (!stem) return result;
-  var parts = stem.split(/[_\-\s]/);
+  var parts = stem.split(/[_\-\s\.]+/);
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
     // 发票号（15-25位数字）
@@ -697,12 +693,11 @@ function extractFromFilename(stem) {
       if (!result.contract_name) result.contract_name = p;
     }
   }
-  // 如果只有 buyer，同时将其赋给 supplier（兜底）
   if (result.buyer && !result.supplier) result.supplier = result.buyer;
   return result;
 }
 
-/* ================= 图像预处理（对齐 Python CLAHE） ================= */
+/* ================= 图像预处理 ================= */
 
 function preprocessCanvas(canvas) {
   var ctx = canvas.getContext('2d');
@@ -713,7 +708,7 @@ function preprocessCanvas(canvas) {
   for (var i = 0, j = 0; i < data.length; i += 4, j++) {
     gray[j] = Math.round(0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2]);
   }
-  // 直方图均衡化（模拟 CLAHE）
+  // 直方图均衡化
   var hist = new Array(256).fill(0);
   for (var gi = 0; gi < gray.length; gi++) hist[gray[gi]]++;
   var cdf = new Array(256);
@@ -737,7 +732,7 @@ function ocrCanvas(canvas) {
   return global.Tesseract.recognize(canvas, 'chi_sim+eng').then(function(r) { return r.data.text || ''; });
 }
 
-/* ================= PDF → 多页文本（对齐 Python max_pages=8） ================= */
+/* ================= PDF → 多页文本 ================= */
 
 function pdfToText(file) {
   return new Promise(function(resolve, reject) {
@@ -779,7 +774,34 @@ function imageToText(file) {
   });
 }
 
-/* ================= 统一入口（对齐 Python smart_extract） ================= */
+/* ================= DOCX/DOC → 文本 ================= */
+
+function docxToText(file) {
+  return new Promise(function(resolve) {
+    // 浏览器端尝试用 mammoth.js 解析（如果加载了）
+    if (global.mammoth) {
+      file.arrayBuffer().then(function(buf) {
+        global.mammoth.extractRawText({arrayBuffer: buf}).then(function(r) {
+          resolve(r.value || '');
+        }).catch(function() { resolve(''); });
+      }).catch(function() { resolve(''); });
+    } else {
+      // 没有 mammoth，尝试读取为文本（可能失败）
+      var reader = new FileReader();
+      reader.onload = function() {
+        // 尝试从二进制中提取可读文本
+        var text = reader.result;
+        // 简单提取中文文本片段
+        var matches = text.match(/[\u4e00-\u9fa5]{2,50}/g) || [];
+        resolve(matches.join('\n'));
+      };
+      reader.onerror = function() { resolve(''); };
+      reader.readAsBinaryString(file);
+    }
+  });
+}
+
+/* ================= 统一入口 ================= */
 
 function extractFromFile(file) {
   return new Promise(function(resolve) {
@@ -791,6 +813,13 @@ function extractFromFile(file) {
     function finalize(t) {
       text = t || '';
       var type = detectDocType(text);
+
+      // 从文件名补充类型（OCR失败时兜底）
+      var fnType = guessTypeFromFilename(stem);
+      if (type === '发票' && fnType !== '发票') {
+        type = fnType;
+      }
+
       var data;
       if (type === '火车票')       data = extractTrainFields(text, stem);
       else if (type === '合同') data = extractContractFields(text);
@@ -799,12 +828,12 @@ function extractFromFile(file) {
       if (type === '发票') extractSpecialInvoice(text, data);
 
       // 从文件名补充缺失字段
-      if (type === '发票' || type === '住宿费' || type === '打车票') {
-        var f = extractFromFilename(stem);
-        if (!data.date && f.date) data.date = f.date;
-        if (!data.invoice_number && f.invoice_number) data.invoice_number = f.invoice_number;
-        if (!data.buyer && f.buyer) data.buyer = f.buyer;
-      }
+      var f = extractFromFilename(stem);
+      if (!data.date && f.date) data.date = f.date;
+      if (!data.invoice_number && f.invoice_number) data.invoice_number = f.invoice_number;
+      if (!data.buyer && f.buyer) data.buyer = f.buyer;
+      if (!data.supplier && f.supplier) data.supplier = f.supplier;
+      if (!data.place && f.place) data.place = f.place;
 
       data._raw_text = text;
       resolve({ data: data, type: type, text: text });
@@ -816,7 +845,7 @@ function extractFromFile(file) {
       } else if (['jpg','jpeg','png','bmp','tiff','tif','gif'].indexOf(ext) !== -1) {
         imageToText(file).then(function(t) { finalize(t); }).catch(function() { finalize(''); });
       } else if (ext === 'docx' || ext === 'doc') {
-        finalize(''); // 浏览器端不解析 docx
+        docxToText(file).then(function(t) { finalize(t); }).catch(function() { finalize(''); });
       } else {
         imageToText(file).then(function(t) { finalize(t); }).catch(function() { finalize(''); });
       }
@@ -824,6 +853,17 @@ function extractFromFile(file) {
       finalize('');
     }
   });
+}
+
+// 从文件名猜测类型
+function guessTypeFromFilename(stem) {
+  var s = String(stem || '').toLowerCase();
+  if (/飞机票|航班|机票|行程单|flight|air|飞猪|携程.*机票|登机牌/.test(s)) return '飞机票';
+  if (/火车票|高铁|动车|列车|g\d+|d\d+|t\d+|k\d+|12306/.test(s)) return '火车票';
+  if (/T3出行|滴滴|曹操|高德打车|美团打车|打车|网约车|出租车/.test(s)) return '打车票';
+  if (/住宿|宾馆|酒店|旅店|如家|汉庭|全季|民宿/.test(s)) return '住宿费';
+  if (/合同|协议|甲方|乙方|采购合同|服务合同/.test(s)) return '合同';
+  return '发票';
 }
 
 /* ================= 暴露到全局 ================= */
@@ -838,7 +878,8 @@ global.EX = {
   extractFromFilename:   extractFromFilename,
   preprocessCanvas:       preprocessCanvas,
   _normalizeText:        normalizeText,
-  _cleanCompany:         cleanCompany
+  _cleanCompany:         cleanCompany,
+  guessTypeFromFilename: guessTypeFromFilename
 };
 
 })(window);

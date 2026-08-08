@@ -12,17 +12,17 @@
 
   <!-- 标题 -->
   <h1>🧾 发票 / 火车票 / 合同 批量重命名</h1>
-  <p class="subtitle">支持 PDF、JPG、PNG、BMP、DOCX 格式，自动识别类型并智能重命名</p>
+  <p class="subtitle">支持 PDF、JPG、PNG、BMP、DOCX/DOC，自动识别类型并智能重命名</p>
 
   <!-- 拖拽区域 -->
   <div id="dropZone" class="drop-zone">
     <span class="drop-icon">📂</span>
-    <p>拖拽发票 / 火车票 / 合同到这里，或点击选择文件</p>
+    <p>拖拽文件到这里，或点击下方按钮选择文件</p>
     <button type="button" id="pickFileBtn" class="btn-primary">选择文件</button>
-    <p id="fileHint" class="drop-hint">未选择文件</p>
+    <p id="fileHint" class="drop-hint">支持 PDF、图片、Word 文档</p>
     <p class="drop-hint-sub">支持多选，单次建议不超过 20 个文件</p>
-    <!-- 隐藏的 file input（不能用 display:none，用视觉隐藏） -->
-    <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.docx,.zip">
+    <!-- 隐藏的 file input -->
+    <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.docx,.doc,.zip">
   </div>
 
   <!-- 高精度开关 -->
@@ -39,9 +39,9 @@
 
   <!-- 统计信息 -->
   <div class="stats-bar" id="statsBar" style="display:none;">
-    <span class="stat-item stat-invoice">🧾 发票: <span class="stat-num" id="statInvoice">0</span></span>
-    <span class="stat-item stat-train">🚄 火车票: <span class="stat-num" id="statTrain">0</span></span>
-    <span class="stat-item stat-contract">📋 合同: <span class="stat-num" id="statContract">0</span></span>
+    <span class="stat-item stat-invoice"> 发票: <span class="stat-num" id="statInvoice">0</span></span>
+    <span class="stat-item stat-train"> 火车票: <span class="stat-num" id="statTrain">0</span></span>
+    <span class="stat-item stat-contract"> 合同: <span class="stat-num" id="statContract">0</span></span>
     <span class="stat-item stat-error">⚠️ 失败: <span class="stat-num" id="statError">0</span></span>
   </div>
 
@@ -62,7 +62,7 @@
         <tr>
           <td colspan="6">
             <div class="empty-state">
-              <span class="empty-icon">📄</span>
+              <span class="empty-icon"></span>
               <p>还没有文件，请拖拽或选择文件开始识别</p>
             </div>
           </td>
@@ -73,8 +73,8 @@
 
   <!-- 操作按钮 -->
   <div class="actions">
-    <button id="downloadZip" class="btn-primary">📦 下载 ZIP</button>
-    <button id="downloadCsv" class="btn-secondary">📊 下载 CSV</button>
+    <button id="downloadZip" class="btn-primary"> 下载 ZIP</button>
+    <button id="downloadCsv" class="btn-secondary"> 下载 CSV</button>
     <button id="downloadExcel" class="btn-secondary">📈 下载 Excel</button>
   </div>
 
@@ -96,9 +96,11 @@
     <input type="text" id="editBuyer">
     <label>销售方 / 乙方</label>
     <input type="text" id="editSupplier">
+    <label>地点 / 出发地</label>
+    <input type="text" id="editPlace">
     <div class="modal-actions">
-      <button class="btn-cancel" onclick="FN_closeEdit()">取消</button>
-      <button class="btn-save" onclick="FN_saveEdit()">保存</button>
+      <button class="btn-cancel" onclick="closeEdit()">取消</button>
+      <button class="btn-save" onclick="saveEdit()">保存</button>
     </div>
   </div>
 </div>
@@ -111,6 +113,8 @@
 <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs" type="module"></script>
+<!-- mammoth.js for DOCX parsing -->
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 
 <!-- ========== 业务脚本（非模块，全局变量，按依赖顺序） ========== -->
 <script src="filenames.js"></script>

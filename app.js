@@ -1,5 +1,6 @@
 /* ============================================================
-   app.js —— 主控制逻辑（增强兜底，依赖文件名）
+   app.js —— 主控制逻辑（修复版）
+   修复：类型判断fallback、docx支持、拖拽增强
    ============================================================ */
 
 // ---------- 工具 ----------
@@ -8,7 +9,7 @@ function getExt(filename) {
   return m ? m[0].toLowerCase() : '.pdf';
 }
 
-// 从文件名补充字段（增强版，支持更多格式）
+// 从文件名补充字段（增强版）
 function extractFromFilename(stem) {
   const result = {};
   const s = String(stem || '');
@@ -53,30 +54,39 @@ function extractFromFilename(stem) {
     cand.sort((a,b) => b.length - a.length);
     result.buyer = cand[0];
     result.supplier = cand[0];
-    // 如果有两个不同的中文词，第二个可作为 supplier 或 party_b
     if (cand.length >= 2 && cand[1] !== cand[0]) {
       result.supplier = cand[1];
     }
-    // 提取地点（含“站”、“路”等）
     const place = cand.find(p => /站|路|酒店|宾馆/.test(p));
     if (place) result.place = place;
   }
 
-  // 尝试从文件名提取合同名称（含“合同”、“协议”等）
+  // 尝试从文件名提取合同名称
   const contractMatch = s.match(/([\u4e00-\u9fa5]{2,15}(?:合同|协议|采购|服务))/);
   if (contractMatch) result.contract_name = contractMatch[1];
 
   return result;
 }
 
+// 从文件名猜测类型
+function guessTypeFromName(name) {
+  const n = String(name).toLowerCase();
+  if (/飞机票|航班|机票|行程单|flight|air|飞猪|携程.*机票|登机牌/.test(n)) return '飞机票';
+  if (/火车票|高铁|动车|列车|g\d+|d\d+|t\d+|k\d+|12306/.test(n)) return '火车票';
+  if (/T3出行|滴滴|曹操|高德打车|美团打车|打车|网约车|出租车/.test(n)) return '打车票';
+  if (/住宿|宾馆|酒店|旅店|如家|汉庭|全季|民宿/.test(n)) return '住宿费';
+  if (/合同|协议|甲方|乙方|采购合同|服务合同/.test(n)) return '合同';
+  return '发票';
+}
+
 // ---------- 文件处理主流程 ----------
 async function handleFiles(files) {
   const fileArray = Array.from(files).filter(f =>
-    /\.(pdf|jpg|jpeg|png|bmp|docx)$/i.test(f.name)
+    /\.(pdf|jpg|jpeg|png|bmp|docx|doc)$/i.test(f.name)
   );
 
   if (!fileArray.length) {
-    toast('请选择支持的发票 / 火车票 / 合同文件');
+    toast('请选择支持的文件（PDF、图片、DOCX/DOC）');
     return;
   }
 
@@ -91,12 +101,11 @@ async function handleFiles(files) {
       // OCR 识别
       const { data, type } = await extractFromFile(file);
 
-      // 如果 OCR 文本为空或极短，视为完全失败，直接走兜底
+      // 如果 OCR 文本为空或极短，视为完全失败，走兜底
       const textLen = (data._raw_text || '').length;
       console.log(`[${file.name}] OCR 文本长度: ${textLen}`);
       if (textLen < 10) {
         console.warn('OCR 文本过短，完全依赖文件名补充');
-        // 构造完全从文件名解析的数据
         const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
         const guessedType = guessTypeFromName(file.name);
         const fallbackData = {
@@ -121,21 +130,25 @@ async function handleFiles(files) {
 
       // 从文件名补充缺失字段
       const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
-      for (const k of ['date','invoice_number','buyer','supplier','sign_date','party_a','party_b','place']) {
+      for (const k of ['date','invoice_number','buyer','supplier','sign_date','party_a','party_b','place','from_station','to_station']) {
         if (!data[k] && fnFields[k]) data[k] = fnFields[k];
       }
 
-      // 确定文档类型（中文）
+      // 确定文档类型
       let docType = window.FN.docType(data._raw_text || '');
       // 若 OCR 检测类型为发票但文件名明显是其他，则覆盖
       const guessed = guessTypeFromName(file.name);
       if (docType === '发票' && guessed !== '发票') {
         docType = guessed;
       }
-      // 如果 OCR 类型是火车票但文件名是飞机票，也覆盖（反之亦然）
+      // 如果 OCR 类型是火车票但文件名是飞机票，也覆盖
       if ((docType === '火车票' && guessed === '飞机票') ||
           (docType === '飞机票' && guessed === '火车票')) {
         docType = guessed;
+      }
+      // T3出行优先于火车票
+      if (docType === '火车票' && /T3出行|滴滴|曹操|网约车|打车/.test(file.name.toLowerCase())) {
+        docType = '打车票';
       }
 
       const newName = FN.generateFilename(data, docType, getExt(file.name));
@@ -144,7 +157,6 @@ async function handleFiles(files) {
       addRow(i, file.name, newName, docType, data);
 
     } catch (err) {
-      // 异常时完全兜底
       console.error('处理文件异常:', err);
       const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
       const guessedType = guessTypeFromName(file.name);
@@ -171,17 +183,6 @@ async function handleFiles(files) {
   hideProgress();
 }
 
-// 从文件名猜测类型（增强版）
-function guessTypeFromName(name) {
-  const n = String(name).toLowerCase();
-  if (/飞机票|航班|机票|行程单|flight|air|飞猪|携程.*机票|登机牌/.test(n)) return '飞机票';
-  if (/火车票|高铁|动车|列车|g\d+|d\d+|t\d+|k\d+|12306/.test(n)) return '火车票';
-  if (/住宿|宾馆|酒店|旅店|如家|汉庭|全季/.test(n)) return '住宿费';
-  if (/打车|滴滴|出租车|网约车|车费|t3出行|曹操出行/.test(n)) return '打车票';
-  if (/合同|协议|甲方|乙方|采购合同|服务合同/.test(n)) return '合同';
-  return '发票';
-}
-
 // ---------- DOM / 事件 ----------
 let results = [];
 let currentEditIndex = null;
@@ -202,9 +203,19 @@ function bindDragDrop() {
   const dropZone = document.getElementById('dropZone');
   if (!dropZone) return;
 
-  dropZone.addEventListener('click', () => {
+  dropZone.addEventListener('click', (e) => {
+    // 点击按钮时触发
+    if (e.target.id === 'pickFileBtn') return;
     document.getElementById('fileInput').click();
   });
+
+  const pickBtn = document.getElementById('pickFileBtn');
+  if (pickBtn) {
+    pickBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.getElementById('fileInput').click();
+    });
+  }
 
   dropZone.addEventListener('dragover', e => {
     e.preventDefault();
@@ -218,14 +229,17 @@ function bindDragDrop() {
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    handleFiles(e.dataTransfer.files);
+    const files = e.dataTransfer.files;
+    if (files && files.length) {
+      handleFiles(files);
+    }
   });
 }
 
 function bindButtons() {
-  document.getElementById('downloadZip')?.addEventListener('click', () => downloadZip(results));
-  document.getElementById('downloadCsv')?.addEventListener('click', () => downloadCsv(results));
-  document.getElementById('downloadExcel')?.addEventListener('click', () => downloadExcel(results));
+  document.getElementById('downloadZip')?.addEventListener('click', () => window.EXPORT.downloadZip(results));
+  document.getElementById('downloadCsv')?.addEventListener('click', () => window.EXPORT.downloadCsv(results));
+  document.getElementById('downloadExcel')?.addEventListener('click', () => window.EXPORT.downloadExcel(results));
 }
 
 // ---------- 表格 ----------
@@ -247,9 +261,20 @@ function addRow(index, orig, renamed, type, data) {
     <td>${type}</td>
     <td>${data.date || data.sign_date || ''}</td>
     <td>${data.amount || ''}</td>
+    <td><button class="btn-small" onclick="deleteRow(${index})">删除</button></td>
   `;
   document.querySelector('#resultTable tbody').appendChild(tr);
 }
+
+// 删除行
+window.deleteRow = function(index) {
+  results.splice(index, 1);
+  // 重新渲染表格
+  clearTable();
+  results.forEach((item, i) => {
+    addRow(i, item.file.name, item.newName, item.type, item.data);
+  });
+};
 
 // ---------- 编辑 ----------
 window.editRow = function (index) {
@@ -261,9 +286,9 @@ window.editRow = function (index) {
   document.getElementById('editNew').value = item.newName;
   document.getElementById('editDate').value = item.data.date || item.data.sign_date || '';
   document.getElementById('editAmount').value = item.data.amount || '';
-  document.getElementById('editBuyer').value = item.data.buyer || '';
-  document.getElementById('editSupplier').value = item.data.supplier || '';
-  document.getElementById('editPlace').value = item.data.place || '';
+  document.getElementById('editBuyer').value = item.data.buyer || item.data.party_a || '';
+  document.getElementById('editSupplier').value = item.data.supplier || item.data.party_b || '';
+  document.getElementById('editPlace').value = item.data.place || item.data.from_station || '';
 
   document.getElementById('editModal').classList.remove('hidden');
 };
@@ -278,6 +303,8 @@ window.saveEdit = function () {
   item.data.buyer = document.getElementById('editBuyer').value;
   item.data.supplier = document.getElementById('editSupplier').value;
   item.data.place = document.getElementById('editPlace').value;
+  item.data.party_a = document.getElementById('editBuyer').value;
+  item.data.party_b = document.getElementById('editSupplier').value;
 
   const docType = item.type;
   item.newName = FN.generateFilename(item.data, docType, getExt(item.file.name));

@@ -4,8 +4,9 @@
  *
  * 挂载到全局: window.HP
  *
- * 后端接口（对齐 Python high_precision_server.py）:
- *   POST { file: <File> }  →  JSON { data, type, text }
+ * 后端接口:
+ *   POST /api/extract  (multipart/form-data, field: file)
+ *   →  JSON { type, text, fields }
  */
 
 (function (global) {
@@ -17,7 +18,6 @@
     var toggle  = document.getElementById('highPrecisionToggle');
     var urlInput = document.getElementById('highPrecisionUrl');
 
-    // 从 localStorage 恢复
     try {
       var savedUrl = localStorage.getItem('hp_url');
       if (savedUrl && urlInput) urlInput.value = savedUrl;
@@ -57,7 +57,6 @@
     });
   }
 
-  // 暴露到全局
   global.HP = {
     init:    initHighPrecision,
     isEnabled: isHighPrecisionEnabled,

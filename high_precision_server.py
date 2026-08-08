@@ -4,7 +4,7 @@ high_precision_server.py
 供前端"高精度模式"调用
 
 接口:
-  POST /api/extract  { "filename": "xxx.pdf", "content_b64": "..." }
+  POST /api/extract  { file: <File> }  (multipart/form-data)
   → { "type": "invoice", "text": "...", "fields": {...} }
 
   GET  /health → { "status": "ok" }
@@ -31,7 +31,7 @@ def get_reader():
     return _reader
 
 
-# ===== 工具函数（与前端 extractors.js 逻辑一致） =====
+# ===== 工具函数 =====
 
 def clean_company(s):
     if not s:
@@ -46,11 +46,41 @@ def clean_company(s):
     return s[:25]
 
 
+def abbr_company(name):
+    if not name:
+        return ''
+    s = re.sub(r'[（(][^）)]{1,10}[）)]', '', name).strip()
+    s = re.sub(r'\s+', '', s)
+    sfx = ['有限责任公司', '股份有限公司', '集团有限公司', '总公司', '分公司', '有限公司', '集团']
+    for x in sfx:
+        if s.endswith(x):
+            s = s[:-len(x)]
+            break
+    s = re.sub(r'[（(].*$', '', s).strip()
+    if len(s) > 6:
+        s = s[:6]
+    return s
+
+
+def abbr_place(name):
+    if not name:
+        return ''
+    s = re.sub(r'\s+', '', name).strip()
+    sfx = ['市', '区', '县', '站', '机场', '高铁站', '火车站']
+    for x in sfx:
+        if s.endswith(x) and len(s) > 2:
+            s = s[:-len(x)]
+            break
+    if len(s) > 4:
+        s = s[:4]
+    return s
+
+
 def extract_from_filename(stem):
     r = {}
     if not stem:
         return r
-    parts = re.split(r'[_\-\s]+', stem)
+    parts = re.split(r'[_\-\s\.]+', stem)
     for p in parts:
         if re.match(r'^\d{15,25}$', p):
             r['invoice_number'] = p
@@ -60,25 +90,49 @@ def extract_from_filename(stem):
         if re.search(r'[\u4e00-\u9fa5]', p) and 4 <= len(p) <= 20:
             if 'buyer' not in r:
                 r['buyer'] = p
+            elif 'supplier' not in r and p != r.get('buyer'):
+                r['supplier'] = p
     return r
 
 
 def detect_doc_type(text):
     if not text:
-        return 'invoice'
-    if re.search(r'车次|高铁|动车|火车票|二等座|一等座|出发站|到达站|票价|中国铁路|列车号', text):
-        return 'train'
-    has_a = re.search(r'甲方|买方|委托方|发包方|采购方|需方', text)
-    has_b = re.search(r'乙方|卖方|承包方|承接方|供货方|供方', text)
-    has_s = re.search(r'本合同|本协议|合同编号|合同金额|平等自愿|协商一致', text)
+        return '发票'
+
+    # T3出行/网约车（优先级最高）
+    if re.search(r'T3出行|滴滴|滴滴出行|曹操出行|高德打车|美团打车|网约车|打车.*发票|出租汽车.*发票', text):
+        return '打车票'
+
+    # 飞机票
+    if re.search(r'航空运输电子客票|行程单|旅客姓名|电子客票|登机牌|航班|机票|飞猪|携程.*机票|airline|flight', text, re.I):
+        return '飞机票'
+
+    # 火车票
+    if re.search(r'车次|高铁|动车|火车票|二等座|一等座|出发站|到达站|票价|中国铁路|列车号|检票|候车|硬卧|软卧|硬座|商务座|无座|网络购票|铁路电子客票|12306|席别|始发站|终到站|补票|开车时间|出发时间|铁路客票', text):
+        return '火车票'
+
+    # 住宿
+    if re.search(r'住宿|宾馆|酒店|旅店|入住|如家|汉庭|全季|民宿|客房|房费', text):
+        return '住宿费'
+
+    # 合同
+    has_a = re.search(r'甲方|买方|委托方|发包方|采购方|需方|招标人', text)
+    has_b = re.search(r'乙方|卖方|承包方|承接方|供货方|供方|中标人', text)
+    has_s = re.search(r'本合同|本协议|合同编号|合同金额|平等自愿|协商一致|合同协议书|货物采购合同|采购合同|服务合同|工程合同|建设工程合同', text)
     if has_s or (has_a and has_b):
-        return 'contract'
-    return 'invoice'
+        return '合同'
+
+    # 弱车次号检测
+    if re.search(r'(?<![A-Z\d])([GDTZKCY]\d{1,4})(?!\d)', text):
+        return '火车票'
+
+    return '发票'
 
 
 def extract_invoice(text, stem=''):
     r = {'date': None, 'invoice_number': None, 'buyer': None,
-          'supplier': None, 'amount': None, 'tax_free_amount': None, 'tax_amount': None}
+          'supplier': None, 'amount': None, 'tax_free_amount': None, 'tax_amount': None,
+          'invoice_type': None, 'place': None, 'from_station': None, 'to_station': None}
     if not text:
         text = ''
 
@@ -182,13 +236,15 @@ def extract_invoice(text, stem=''):
         r['invoice_number'] = f.get('invoice_number')
     if not r['buyer']:
         r['buyer'] = f.get('buyer')
+    if not r['supplier']:
+        r['supplier'] = f.get('supplier')
 
     return r
 
 
 def extract_train(text, stem=''):
     r = {'date': None, 'train_number': None, 'from_station': None,
-         'to_station': None, 'price': None}
+         'to_station': None, 'passenger_name': None, 'seat_type': None, 'price': None}
     if not text:
         text = ''
 
@@ -212,11 +268,11 @@ def extract_train(text, stem=''):
 
     m = re.search(r'(?:出发站|始发站|从)[：:\s]*([\u4e00-\u9fa5]{2,8}站?)', text)
     if m:
-        r['from_station'] = m.group(1)
+        r['from_station'] = m.group(1).rstrip('站') if len(m.group(1)) > 2 else m.group(1)
 
-    m = re.search(r'(?:到达站|终到站|到)[：:\s]*([\u4e00-\u9fa5]{2,8}站?)', text)
+    m = re.search(r'(?:到达站|终到站|到|目的地)[：:\s]*([\u4e00-\u9fa5]{2,8}站?)', text)
     if m:
-        r['to_station'] = m.group(1)
+        r['to_station'] = m.group(1).rstrip('站') if len(m.group(1)) > 2 else m.group(1)
 
     m = re.search(r'[¥￥]\s*(\d+\.\d{2})', text)
     if not m:
@@ -228,6 +284,51 @@ def extract_train(text, stem=''):
             r['price'] = f"{float(m.group(1)):.2f}"
         except ValueError:
             pass
+
+    return r
+
+
+def extract_t3(text, stem=''):
+    """T3出行/网约车字段抽取"""
+    r = {'date': None, 'from_station': None, 'to_station': None, 'amount': None, 'supplier': 'T3出行'}
+    if not text:
+        text = ''
+
+    # 日期
+    for pat in [
+        r'(?:出行日期|乘车日期|日期)[：:\s]*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})',
+        r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日',
+        r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})',
+    ]:
+        m = re.search(pat, text)
+        if m:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 2000 <= y <= 2030 and 1 <= mo <= 12 and 1 <= d <= 31:
+                r['date'] = f'{y}-{mo:02d}-{d:02d}'
+                break
+
+    # 出发地/到达地
+    m = re.search(r'(?:出发|起点|上车地点|起始)[：:\s]*([^\n]{2,10})', text)
+    if m:
+        r['from_station'] = m.group(1).strip()[:10]
+
+    m = re.search(r'(?:到达|终点|下车地点|目的)[：:\s]*([^\n]{2,10})', text)
+    if m:
+        r['to_station'] = m.group(1).strip()[:10]
+
+    # 金额
+    for pat in [
+        r'(?:金额|合计|车费)[：:\s]*[¥￥]?\s*(\d+\.\d{2})',
+        r'[¥￥]\s*(\d+\.\d{2})',
+        r'(\d+\.\d{2})\s*元',
+    ]:
+        m = re.search(pat, text)
+        if m:
+            try:
+                r['amount'] = f"{float(m.group(1)):.2f}"
+                break
+            except ValueError:
+                pass
 
     return r
 
@@ -250,7 +351,7 @@ def extract_contract(text):
                 r['sign_date'] = f'{y}-{mo:02d}-{d:02d}'
                 break
 
-    m = re.search(r'(?:合同名称|协议名称)[：:\s]*([^\n]{2,25})', text)
+    m = re.search(r'(?:合同名称|协议名称|项目名称)[：:\s]*([^\n]{2,25})', text)
     if not m:
         m = re.search(r'([^\n]{2,15}(?:服务合同|采购合同|销售合同|劳动合同|租赁|协议|协议书))', text)
     if m:
@@ -315,6 +416,17 @@ def pdf_to_text(pdf_bytes, max_pages=8):
     return '\n'.join(texts)
 
 
+def docx_to_text(docx_bytes):
+    """DOCX → 文本（python-docx）"""
+    import docx
+    doc = docx.Document(io.BytesIO(docx_bytes))
+    texts = []
+    for para in doc.paragraphs:
+        if para.text.strip():
+            texts.append(para.text.strip())
+    return '\n'.join(texts)
+
+
 # ===== Flask 路由 =====
 
 @app.route('/health', methods=['GET'])
@@ -325,25 +437,33 @@ def health():
 @app.route('/api/extract', methods=['POST'])
 def api_extract():
     try:
-        data = request.get_json(force=True)
-        filename = data.get('filename', '')
-        content_b64 = data.get('content_b64', '')
-
-        if not content_b64:
-            return jsonify({'error': '缺少 content_b64'}), 400
-
-        raw = base64.b64decode(content_b64)
+        # 支持两种格式：JSON (base64) 或 multipart/form-data
+        if request.content_type and 'multipart' in request.content_type:
+            file = request.files.get('file')
+            if not file:
+                return jsonify({'error': '缺少 file 字段'}), 400
+            filename = file.filename
+            raw = file.read()
+        else:
+            data = request.get_json(force=True)
+            filename = data.get('filename', '')
+            content_b64 = data.get('content_b64', '')
+            if not content_b64:
+                return jsonify({'error': '缺少 content_b64'}), 400
+            raw = base64.b64decode(content_b64)
 
         # 判断类型并 OCR
         lower = filename.lower()
         if lower.endswith('.pdf'):
             text = pdf_to_text(raw, max_pages=8)
+        elif lower.endswith('.docx') or lower.endswith('.doc'):
+            text = docx_to_text(raw)
         else:
             text = ocr_with_easyocr(raw)
 
         if not text or len(text.strip()) < 5:
             return jsonify({
-                'type': 'invoice',
+                'type': '发票',
                 'text': '',
                 'fields': {},
                 'warning': 'OCR 未提取到有效文本'
@@ -353,16 +473,18 @@ def api_extract():
         stem = re.sub(r'\.[^.]+$', '', filename)
         doc_type = detect_doc_type(text)
 
-        if doc_type == 'train':
+        if doc_type == '火车票':
             fields = extract_train(text, stem)
-        elif doc_type == 'contract':
+        elif doc_type == '打车票':
+            fields = extract_t3(text, stem)
+        elif doc_type == '合同':
             fields = extract_contract(text)
         else:
             fields = extract_invoice(text, stem)
 
         return jsonify({
             'type': doc_type,
-            'text': text[:2000],  # 截断，避免响应过大
+            'text': text[:2000],
             'fields': fields
         })
 
