@@ -134,11 +134,19 @@ function genInvoice(data, docTypeStr, ext) {
 
 // ---------- 统一出口 ----------
 function generateFilename(data, docTypeStr, ext) {
-  if (docTypeStr === '合同') return genContract(data, docTypeStr, ext);
-  if (docTypeStr === '飞机票' || docTypeStr === '火车票' || docTypeStr === '打车票') return genTraffic(data, docTypeStr, ext);
-  if (docTypeStr === '住宿费') return genConsume(data, docTypeStr, ext);
-  // 普通发票
-  return genInvoice(data, docTypeStr, ext);
+  var result;
+  if (docTypeStr === '合同') result = genContract(data, docTypeStr, ext);
+  else if (docTypeStr === '飞机票' || docTypeStr === '火车票' || docTypeStr === '打车票') result = genTraffic(data, docTypeStr, ext);
+  else if (docTypeStr === '住宿费') result = genConsume(data, docTypeStr, ext);
+  else result = genInvoice(data, docTypeStr, ext);
+
+  // 安全检查：如果生成的文件名只包含类型名（没有实质信息），标记为需要 fallback
+  var stem = result.replace(/\.[^.]+$/, '');
+  var bareTypes = ['发票', '火车票', '飞机票', '打车票', '住宿费', '合同', '0000-01-01_未命名'];
+  if (bareTypes.indexOf(stem) !== -1) {
+    return '__FALLBACK__' + result;
+  }
+  return result;
 }
 
 window.FN = { generateFilename, docType, abbrCompany, abbrPlace };

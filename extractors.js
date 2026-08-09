@@ -559,16 +559,22 @@ function extractContractFields(text) {
   if (!result.contract_name) {
     for (var i2 = 0; i2 < Math.min(10, lines.length); i2++) {
       var c = lines[i2].replace(/[《》【】\[\]（(）)\s]+/g, '');
-      if (c.length > 2 && c.length <= 20 && /合同|协议书/.test(c)) {
-        if (['合同','协议书','协议','本合同','本协议'].indexOf(c) === -1) {
-          result.contract_name = c; break;
-        }
+      // 去掉 "原件""复印件""扫描件""正本""副本" 等后缀
+      c = c.replace(/(?:原件|复印件|扫描件|正本|副本|盖章|签字|签署)\d*$/, '');
+      var skipWords = ['合同','协议书','协议','本合同','本协议','盖章','签字','签署'];
+      if (c.length >= 4 && c.length <= 25 && skipWords.indexOf(c) === -1) {
+        result.contract_name = c; break;
       }
     }
   }
   if (!result.contract_name) {
-    var m3 = text.match(/[\u4e00-\u9fff]{2,12}(?:采购合同|服务合同|工程合同|合同|协议书)/);
-    if (m3) result.contract_name = m3[0].substring(0, 20);
+    // 更宽松的匹配：取合同/协议前面的描述性名称
+    var m3 = text.match(/([\u4e00-\u9fff\w]{2,20})\s*(?:合同|协议书|协议)/);
+    if (m3) result.contract_name = m3[1].substring(0, 20);
+  }
+  if (!result.contract_name) {
+    var m3b = text.match(/[\u4e00-\u9fff]{2,12}(?:采购合同|服务合同|工程合同|合同|协议书)/);
+    if (m3b) result.contract_name = m3b[0].substring(0, 20);
   }
 
   // 签订日期
@@ -683,16 +689,38 @@ function extractFromFilename(stem) {
       }
     }
     // 中文片段（公司名 / 地点）
-    else if (/[\u4e00-\u9fa5]/.test(p) && p.length >= 4) {
+    else if (/[\u4e00-\u9fa5]/.test(p) && p.length >= 2) {
+      // 跳过通用描述词
+      if (/^(发票|报销|凭证|电子|机票|行程单|订单|原件|复印件|合同|协议|扫描件)$/i.test(p)) continue;
       if (!result.buyer) result.buyer = p;
       else if (!result.supplier && p !== result.buyer) result.supplier = p;
-      if (/站|路|酒店|宾馆/.test(p) && !result.place) result.place = p;
+      if (/站|路|酒店|宾馆|机场|高铁/.test(p) && !result.place) result.place = p;
     }
-    // 合同名称
+    // 合同名称（从文件名中的合同/协议关键词）
     else if (/(?:合同|协议|采购|服务)/.test(p) && p.length > 2) {
       if (!result.contract_name) result.contract_name = p;
     }
   }
+
+  // 从完整文件名提取路线模式（出发地-到达地），如 "沈阳-上海"
+  var routeMatch = stem.match(/([\u4e00-\u9fa5]{2,6})\s*[-—–~]\s*([\u4e00-\u9fa5]{2,6})/);
+  if (routeMatch) {
+    var from = routeMatch[1], to = routeMatch[2];
+    if (!/^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件)/.test(from) &&
+        !/^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件)/.test(to)) {
+      result.from_station = from;
+      result.to_station = to;
+    }
+  }
+
+  // 从完整文件名提取合同名称（"XXX合同"、"XXX协议"）
+  if (!result.contract_name) {
+    var cnMatch = stem.match(/([\u4e00-\u9fa5\w]{2,20})\s*(?:合同|协议|合同原件|协议原件)/);
+    if (cnMatch) {
+      result.contract_name = cnMatch[1];
+    }
+  }
+
   if (result.buyer && !result.supplier) result.supplier = result.buyer;
   return result;
 }
@@ -732,6 +760,31 @@ function ocrCanvas(canvas) {
   return global.Tesseract.recognize(canvas, 'chi_sim+eng').then(function(r) { return r.data.text || ''; });
 }
 
+/* ================= OCR.space 备选引擎 ================= */
+// 免费API: https://ocr.space | 默认key限额10次/10分钟, 注册后可获25000次/月
+var OCR_SPACE_KEY = 'helloworld';
+
+function ocrSpaceAPI(fileOrBlob) {
+  var formData = new FormData();
+  formData.append('file', fileOrBlob);
+  formData.append('apikey', OCR_SPACE_KEY);
+  formData.append('language', 'chs+eng');
+  formData.append('scale', 'true');
+  formData.append('OCREngine', '1');
+  return fetch('https://api.ocr.space/parse/image', {
+    method: 'POST',
+    body: formData
+  }).then(function(resp) { return resp.json(); }).then(function(data) {
+    if (data && data.ParsedResults && data.ParsedResults.length > 0) {
+      return data.ParsedResults.map(function(p) { return p.ParsedText || ''; }).join('\n');
+    }
+    return '';
+  }).catch(function(err) {
+    console.warn('OCR.space API 调用失败:', err.message || err);
+    return '';
+  });
+}
+
 /* ================= PDF → 多页文本 ================= */
 
 function pdfToText(file) {
@@ -741,10 +794,21 @@ function pdfToText(file) {
       global.pdfjsLib.getDocument({data: buf}).promise.then(function(pdf) {
         var numPages = Math.min(pdf.numPages, 8);
         var fullText = '';
+        var canvases = []; // 保留各页 canvas 供备选引擎使用
         function processPage(i) {
-          if (i > numPages) { resolve(fullText.trim()); return; }
+          if (i > numPages) {
+            // Tesseract 结果不足时，尝试 OCR.space（直接传原始文件，OCR.space 原生支持 PDF）
+            if (fullText.trim().length < 50) {
+              ocrSpaceAPI(file).then(function(apiText) {
+                resolve((apiText.length > fullText.length ? apiText : fullText).trim());
+              }).catch(function() { resolve(fullText.trim()); });
+            } else {
+              resolve(fullText.trim());
+            }
+            return;
+          }
           pdf.getPage(i).then(function(page) {
-            var viewport = page.getViewport({scale: 2});
+            var viewport = page.getViewport({scale: 3}); // 提升分辨率
             var canvas = document.createElement('canvas');
             canvas.width = viewport.width; canvas.height = viewport.height;
             var ctx = canvas.getContext('2d');
@@ -770,7 +834,15 @@ function imageToText(file) {
     var ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0);
     preprocessCanvas(canvas);
-    return ocrCanvas(canvas);
+    return ocrCanvas(canvas).then(function(tessText) {
+      // Tesseract 结果不足时，用 OCR.space 补刀（直接传原文件）
+      if (tessText.trim().length < 50) {
+        return ocrSpaceAPI(file).then(function(apiText) {
+          return apiText.length > tessText.length ? apiText : tessText;
+        }).catch(function() { return tessText; });
+      }
+      return tessText;
+    });
   });
 }
 
@@ -820,6 +892,11 @@ function extractFromFile(file) {
         type = fnType;
       }
 
+      // OCR 文本过短时，优先信任文件名判断的类型
+      if (text.trim().length < 30 && fnType !== '发票' && fnType !== type) {
+        type = fnType;
+      }
+
       var data;
       if (type === '火车票')       data = extractTrainFields(text, stem);
       else if (type === '合同') data = extractContractFields(text);
@@ -834,6 +911,11 @@ function extractFromFile(file) {
       if (!data.buyer && f.buyer) data.buyer = f.buyer;
       if (!data.supplier && f.supplier) data.supplier = f.supplier;
       if (!data.place && f.place) data.place = f.place;
+      // 补充交通票的站点信息（OCR 未能提取时从文件名补）
+      if (!data.from_station && f.from_station) data.from_station = f.from_station;
+      if (!data.to_station && f.to_station) data.to_station = f.to_station;
+      // 补充合同名称（OCR 未能提取时从文件名补）
+      if (!data.contract_name && f.contract_name) data.contract_name = f.contract_name;
 
       data._raw_text = text;
       resolve({ data: data, type: type, text: text });

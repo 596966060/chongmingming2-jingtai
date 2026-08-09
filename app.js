@@ -46,23 +46,30 @@ function extractFromFilename(stem) {
   const inv = s.match(/\b(\d{15,25})\b/);
   if (inv) result.invoice_number = inv[1];
 
-  // 提取中文片段（公司名 / 地点 / 甲方乙方）
-  const cn = s.split(/[_\-\s\.]+/).filter(p => /^[\u4e00-\u9fa5]{2,20}$/.test(p));
-  const STOP = new Set(['住宿费','发票','火车票','飞机票','打车票','合同','机票','报销','凭证','电子发票']);
-  const cand = cn.filter(p => !STOP.has(p));
-  if (cand.length) {
-    cand.sort((a,b) => b.length - a.length);
-    result.buyer = cand[0];
-    result.supplier = cand[0];
-    if (cand.length >= 2 && cand[1] !== cand[0]) {
-      result.supplier = cand[1];
+  // 提取路线模式：城市-城市（如 "沈阳-上海"）
+  const routeMatch = s.match(/([\u4e00-\u9fa5]{2,6})\s*[-—–~]\s*([\u4e00-\u9fa5]{2,6})/);
+  if (routeMatch) {
+    const from = routeMatch[1], to = routeMatch[2];
+    const skipWords = /^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件|电子|住宿)/;
+    if (!skipWords.test(from) && !skipWords.test(to)) {
+      result.from_station = from;
+      result.to_station = to;
     }
-    const place = cand.find(p => /站|路|酒店|宾馆/.test(p));
+  }
+
+  // 提取中文片段（公司名 / 地点 / 甲方乙方）
+  const STOP = new Set(['住宿费','发票','火车票','飞机票','打车票','合同','机票','报销','凭证','电子发票','电子','订单','原件','复印件','扫描件','住宿','行程单']);
+  const cn = s.split(/[_\-\s\.]+/).filter(p => /^[\u4e00-\u9fa5]{2,20}$/.test(p) && !STOP.has(p));
+  if (cn.length) {
+    cn.sort((a,b) => b.length - a.length);
+    result.buyer = cn[0];
+    result.supplier = (cn.length >= 2 && cn[1] !== cn[0]) ? cn[1] : '';
+    const place = cn.find(p => /站|路|酒店|宾馆|机场|高铁/.test(p));
     if (place) result.place = place;
   }
 
-  // 尝试从文件名提取合同名称
-  const contractMatch = s.match(/([\u4e00-\u9fa5]{2,15}(?:合同|协议|采购|服务))/);
+  // 尝试从文件名提取合同名称（"XXX合同"、"XXX协议"）
+  const contractMatch = s.match(/([\u4e00-\u9fa5\w]{2,20})\s*(?:合同|协议|合同原件|协议原件)/);
   if (contractMatch) result.contract_name = contractMatch[1];
 
   return result;
@@ -101,30 +108,84 @@ async function handleFiles(files) {
       // OCR 识别
       const { data, type } = await extractFromFile(file);
 
-      // 如果 OCR 文本为空或极短，视为完全失败，走兜底
+      // 如果 OCR 文本为空或极短，视为完全失败，完全走文件名兜底
       const textLen = (data._raw_text || '').length;
       console.log(`[${file.name}] OCR 文本长度: ${textLen}`);
-      if (textLen < 10) {
+      if (textLen < 30) {
         console.warn('OCR 文本过短，完全依赖文件名补充');
-        const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
+        const stem = file.name.replace(/\.[^.]+$/, '');
+        const fnFields = extractFromFilename(stem);
+        // 优先用文件名判断的类型（避免 OCR 误判类型）
         const guessedType = guessTypeFromName(file.name);
+
+        // 如果 OCR 有一点文字但不足以提取字段，仍尝试从 OCR 文本获取部分信息
+        if (textLen >= 10 && data) {
+          // OCR 有些文字，尝试提取基础字段
+          const ocrFields = (data._raw_text || '').length >= 10 ? window.EX.extractInvoiceFields(data._raw_text || '', stem) : {};
+          for (const k of ['date','amount','buyer','supplier','from_station','to_station','place','sign_date','contract_name','party_a','party_b']) {
+            if (ocrFields[k] && !fnFields[k]) fnFields[k] = ocrFields[k];
+          }
+          // 类型仍用 OCR 结果（如果比文件名更有信息量）
+          const ocrType = window.FN.docType(data._raw_text || '');
+          const finalType = (ocrType !== '发票') ? ocrType : guessedType;
+          const finalData = {
+            date: fnFields.date || data.date || '',
+            supplier: fnFields.supplier || data.supplier || '',
+            buyer: fnFields.buyer || data.buyer || '',
+            amount: fnFields.amount || data.amount || '',
+            from_station: fnFields.from_station || data.from_station || '',
+            to_station: fnFields.to_station || data.to_station || '',
+            place: fnFields.place || data.place || '',
+            sign_date: fnFields.sign_date || data.sign_date || fnFields.date || '',
+            contract_name: fnFields.contract_name || data.contract_name || '',
+            party_a: fnFields.party_a || data.party_a || fnFields.buyer || '',
+            party_b: fnFields.party_b || data.party_b || fnFields.supplier || '',
+            _raw_text: data._raw_text || '',
+          };
+          // 防止 buyer 和 supplier 重复
+          if (finalData.buyer && finalData.supplier && finalData.buyer === finalData.supplier) {
+            finalData.supplier = '';
+          }
+          const newName = FN.generateFilename(finalData, finalType, getExt(file.name));
+          // 如果 generateFilename 返回 __FALLBACK__ 标记，说明生成的文件名无意义，用原文件名
+          let finalName;
+          if (newName.startsWith('__FALLBACK__')) {
+            finalName = file.name;
+          } else {
+            finalName = newName;
+          }
+          results.push({ file, data: finalData, type: finalType, newName: finalName });
+          addRow(i, file.name, finalName, finalType, finalData);
+          continue;
+        }
+
         const fallbackData = {
           date: fnFields.date || '',
-          supplier: fnFields.supplier || fnFields.buyer || '',
-          buyer: fnFields.buyer || fnFields.supplier || '',
+          supplier: fnFields.supplier || '',
+          buyer: fnFields.buyer || '',
           amount: '',
-          from_station: '',
-          to_station: '',
+          from_station: fnFields.from_station || '',
+          to_station: fnFields.to_station || '',
           place: fnFields.place || '',
-          sign_date: fnFields.date || '',
+          sign_date: fnFields.sign_date || fnFields.date || '',
           contract_name: fnFields.contract_name || '',
           party_a: fnFields.buyer || '',
           party_b: fnFields.supplier || '',
           _raw_text: '',
         };
+        // 防止 buyer 和 supplier 重复
+        if (fallbackData.buyer && fallbackData.supplier && fallbackData.buyer === fallbackData.supplier) {
+          fallbackData.supplier = '';
+        }
         const newName = FN.generateFilename(fallbackData, guessedType, getExt(file.name));
-        results.push({ file, data: fallbackData, type: guessedType, newName });
-        addRow(i, file.name, newName, guessedType, fallbackData);
+        let finalName2;
+        if (newName.startsWith('__FALLBACK__')) {
+          finalName2 = file.name;
+        } else {
+          finalName2 = newName;
+        }
+        results.push({ file, data: fallbackData, type: guessedType, newName: finalName2 });
+        addRow(i, file.name, finalName2, guessedType, fallbackData);
         continue;
       }
 
@@ -152,31 +213,47 @@ async function handleFiles(files) {
       }
 
       const newName = FN.generateFilename(data, docType, getExt(file.name));
+      let finalNewName;
+      if (newName.startsWith('__FALLBACK__')) {
+        finalNewName = file.name;
+      } else {
+        finalNewName = newName;
+      }
 
-      results.push({ file, data, type: docType, newName });
-      addRow(i, file.name, newName, docType, data);
+      results.push({ file, data, type: docType, newName: finalNewName });
+      addRow(i, file.name, finalNewName, docType, data);
 
     } catch (err) {
       console.error('处理文件异常:', err);
-      const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
+      const stem = file.name.replace(/\.[^.]+$/, '');
+      const fnFields = extractFromFilename(stem);
       const guessedType = guessTypeFromName(file.name);
       const fallbackData = {
         date: fnFields.date || '',
-        supplier: fnFields.supplier || fnFields.buyer || '',
-        buyer: fnFields.buyer || fnFields.supplier || '',
+        supplier: fnFields.supplier || '',
+        buyer: fnFields.buyer || '',
         amount: '',
-        from_station: '',
-        to_station: '',
+        from_station: fnFields.from_station || '',
+        to_station: fnFields.to_station || '',
         place: fnFields.place || '',
-        sign_date: fnFields.date || '',
+        sign_date: fnFields.sign_date || fnFields.date || '',
         contract_name: fnFields.contract_name || '',
         party_a: fnFields.buyer || '',
         party_b: fnFields.supplier || '',
         _raw_text: '',
       };
+      if (fallbackData.buyer && fallbackData.supplier && fallbackData.buyer === fallbackData.supplier) {
+        fallbackData.supplier = '';
+      }
       const newName = FN.generateFilename(fallbackData, guessedType, getExt(file.name));
-      results.push({ file, data: fallbackData, type: guessedType, newName });
-      addRow(i, file.name, newName, guessedType, fallbackData);
+      let finalName;
+      if (newName.startsWith('__FALLBACK__')) {
+        finalName = file.name;
+      } else {
+        finalName = newName;
+      }
+      results.push({ file, data: fallbackData, type: guessedType, newName: finalName });
+      addRow(i, file.name, finalName, guessedType, fallbackData);
     }
   }
 
@@ -203,31 +280,47 @@ function bindDragDrop() {
   const dropZone = document.getElementById('dropZone');
   if (!dropZone) return;
 
+  const pickBtn = document.getElementById('pickFileBtn');
+  const fileInput = document.getElementById('fileInput');
+
   dropZone.addEventListener('click', (e) => {
-    // 点击按钮时触发
-    if (e.target.id === 'pickFileBtn') return;
-    document.getElementById('fileInput').click();
+    if (e.target === pickBtn || pickBtn.contains(e.target)) return;
+    fileInput.click();
   });
 
-  const pickBtn = document.getElementById('pickFileBtn');
   if (pickBtn) {
     pickBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      document.getElementById('fileInput').click();
+      fileInput.click();
     });
   }
 
-  dropZone.addEventListener('dragover', e => {
+  // 拖拽：用 relatedTarget 防止子元素冒泡导致闪烁
+  let dragCounter = 0;
+  dropZone.addEventListener('dragenter', e => {
     e.preventDefault();
+    dragCounter++;
     dropZone.classList.add('drag-over');
   });
 
-  dropZone.addEventListener('dragleave', () => {
-    dropZone.classList.remove('drag-over');
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  dropZone.addEventListener('dragleave', e => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      dropZone.classList.remove('drag-over');
+    }
   });
 
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
+    e.stopPropagation();
+    dragCounter = 0;
     dropZone.classList.remove('drag-over');
     const files = e.dataTransfer.files;
     if (files && files.length) {
@@ -308,6 +401,10 @@ window.saveEdit = function () {
 
   const docType = item.type;
   item.newName = FN.generateFilename(item.data, docType, getExt(item.file.name));
+  // 如果生成结果带 FALLBACK 标记，说明字段不足以生成有意义文件名
+  if (item.newName.startsWith('__FALLBACK__')) {
+    item.newName = item.file.name; // 保持原文件名
+  }
 
   document.querySelector(`tr[data-index="${currentEditIndex}"] .editable`).textContent = item.newName;
   closeEdit();
