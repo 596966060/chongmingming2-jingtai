@@ -1,6 +1,6 @@
 /* ============================================================
-   app.js —— 主控制逻辑（修复版）
-   修复：类型判断fallback、docx支持、拖拽增强
+   app.js —— v3 主控制逻辑
+   核心原则：OCR 失败也用文件名生成名称，绝不默认保留原名
    ============================================================ */
 
 // ---------- 工具 ----------
@@ -19,58 +19,69 @@ function extractFromFilename(stem) {
   if (m) {
     const y = 2000 + (+m[1]), mo = +m[2], d = +m[3];
     if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
-      result.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      result.date = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     }
   }
 
-  // 支持 "6.8" 或 "6-8" 格式
-  const md = s.match(/(?:^|[\s\-_.])(\d{1,2})[.\-](\d{1,2})(?:$|[\s\-_.])/);
-  if (md && !result.date) {
-    const mo = +md[1], d = +md[2];
-    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
-      const year = new Date().getFullYear();
-      result.date = `${year}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  // "6.8" 或 "6-8" 格式
+  if (!result.date) {
+    const md = s.match(/(?:^|[\s\-_.])(\d{1,2})[.\-](\d{1,2})(?:$|[\s\-_.])/);
+    if (md) {
+      const mo = +md[1], d = +md[2];
+      if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+        const year = new Date().getFullYear();
+        result.date = `${year}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
     }
   }
 
-  // 支持 "2025-06-08" 或 "2025/06/08"
-  const m2 = s.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (m2 && !result.date) {
-    const y = +m2[1], mo = +m2[2], d = +m2[3];
-    if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
-      result.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  // "2025-06-08" 格式
+  if (!result.date) {
+    const m2 = s.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (m2) {
+      const y = +m2[1], mo = +m2[2], d = +m2[3];
+      if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+        result.date = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
     }
   }
 
-  // 发票号（15-25位数字）
+  // 发票号
   const inv = s.match(/\b(\d{15,25})\b/);
   if (inv) result.invoice_number = inv[1];
 
-  // 提取路线模式：城市-城市（如 "沈阳-上海"）
+  // 路线模式："沈阳-上海"
   const routeMatch = s.match(/([\u4e00-\u9fa5]{2,6})\s*[-—–~]\s*([\u4e00-\u9fa5]{2,6})/);
   if (routeMatch) {
     const from = routeMatch[1], to = routeMatch[2];
-    const skipWords = /^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件|电子|住宿)/;
+    const skipWords = /^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件|电子|住宿|打车)/;
     if (!skipWords.test(from) && !skipWords.test(to)) {
       result.from_station = from;
       result.to_station = to;
     }
   }
 
-  // 提取中文片段（公司名 / 地点 / 甲方乙方）
-  const STOP = new Set(['住宿费','发票','火车票','飞机票','打车票','合同','机票','报销','凭证','电子发票','电子','订单','原件','复印件','扫描件','住宿','行程单']);
+  // 中文片段（公司名 / 地点）
+  const STOP = new Set(['住宿费', '发票', '火车票', '飞机票', '打车票', '合同', '机票', '报销', '凭证',
+    '电子发票', '电子', '订单', '原件', '复印件', '扫描件', '住宿', '行程单', '打车',
+    '出行', '网约车', '出租车', '火车票', '高铁', '动车', '协议', '甲方', '乙方']);
   const cn = s.split(/[_\-\s\.]+/).filter(p => /^[\u4e00-\u9fa5]{2,20}$/.test(p) && !STOP.has(p));
   if (cn.length) {
-    cn.sort((a,b) => b.length - a.length);
+    cn.sort((a, b) => b.length - a.length);
     result.buyer = cn[0];
     result.supplier = (cn.length >= 2 && cn[1] !== cn[0]) ? cn[1] : '';
-    const place = cn.find(p => /站|路|酒店|宾馆|机场|高铁/.test(p));
+    const place = cn.find(p => /站|路|酒店|宾馆|机场|高铁|广德|德县/.test(p));
     if (place) result.place = place;
   }
 
-  // 尝试从文件名提取合同名称（"XXX合同"、"XXX协议"）
-  const contractMatch = s.match(/([\u4e00-\u9fa5\w]{2,20})\s*(?:合同|协议|合同原件|协议原件)/);
+  // 合同名称
+  const contractMatch = s.match(/([\u4e00-\u9fa5\w]{2,20})\s*(?:合同原件|协议原件|合同|协议)/);
   if (contractMatch) result.contract_name = contractMatch[1];
+
+  // 防止 buyer == supplier
+  if (result.buyer && result.supplier && result.buyer === result.supplier) {
+    result.supplier = '';
+  }
 
   return result;
 }
@@ -78,11 +89,11 @@ function extractFromFilename(stem) {
 // 从文件名猜测类型
 function guessTypeFromName(name) {
   const n = String(name).toLowerCase();
-  if (/飞机票|航班|机票|行程单|flight|air|飞猪|携程.*机票|登机牌/.test(n)) return '飞机票';
-  if (/火车票|高铁|动车|列车|g\d+|d\d+|t\d+|k\d+|12306/.test(n)) return '火车票';
+  if (/飞机票|航班|机票|行程单|flight|air|飞猪|携程.*机票|登机牌|航空/.test(n)) return '飞机票';
   if (/T3出行|滴滴|曹操|高德打车|美团打车|打车|网约车|出租车/.test(n)) return '打车票';
+  if (/火车票|高铁|动车|列车|g\d{1,4}\b|d\d{1,4}\b|t\d{1,4}\b|k\d{1,4}\b|12306|车次/.test(n)) return '火车票';
   if (/住宿|宾馆|酒店|旅店|如家|汉庭|全季|民宿/.test(n)) return '住宿费';
-  if (/合同|协议|甲方|乙方|采购合同|服务合同/.test(n)) return '合同';
+  if (/合同|协议|甲方|乙方|采购合同|服务合同|工程合同/.test(n)) return '合同';
   return '发票';
 }
 
@@ -106,145 +117,112 @@ async function handleFiles(files) {
 
     try {
       // OCR 识别
-      const { data, type } = await extractFromFile(file);
-
-      // 如果 OCR 文本为空或极短，视为完全失败，完全走文件名兜底
+      const { data, type: ocrType } = await extractFromFile(file);
       const textLen = (data._raw_text || '').length;
-      console.log(`[${file.name}] OCR 文本长度: ${textLen}`);
+      console.log(`[${file.name}] OCR 文本长度: ${textLen}, OCR类型: ${ocrType}`);
+
+      // 从文件名提取字段
+      const stem = file.name.replace(/\.[^.]+$/, '');
+      const fnFields = extractFromFilename(stem);
+      const fnType = guessTypeFromName(file.name);
+
+      // 合并数据：OCR 结果 + 文件名补充
+      const mergedData = Object.assign({}, data);
+
+      // 补充文件名中的字段（OCR没提取到的才补）
+      const fillKeys = ['date', 'invoice_number', 'buyer', 'supplier',
+        'from_station', 'to_station', 'place', 'sign_date', 'contract_name',
+        'party_a', 'party_b', 'amount'];
+      for (const k of fillKeys) {
+        if (!mergedData[k] && fnFields[k]) mergedData[k] = fnFields[k];
+      }
+
+      // 如果 OCR 有 amount 但格式不标准，优先用 OCR 的
+      if (!data.amount && fnFields.amount) mergedData.amount = fnFields.amount;
+
+      // 类型决策逻辑
+      let docType = ocrType;
+
+      // OCR 文本太短时，完全信任文件名判断的类型
       if (textLen < 30) {
-        console.warn('OCR 文本过短，完全依赖文件名补充');
-        const stem = file.name.replace(/\.[^.]+$/, '');
-        const fnFields = extractFromFilename(stem);
-        // 优先用文件名判断的类型（避免 OCR 误判类型）
-        const guessedType = guessTypeFromName(file.name);
-
-        // 如果 OCR 有一点文字但不足以提取字段，仍尝试从 OCR 文本获取部分信息
-        if (textLen >= 10 && data) {
-          // OCR 有些文字，尝试提取基础字段
-          const ocrFields = (data._raw_text || '').length >= 10 ? window.EX.extractInvoiceFields(data._raw_text || '', stem) : {};
-          for (const k of ['date','amount','buyer','supplier','from_station','to_station','place','sign_date','contract_name','party_a','party_b']) {
-            if (ocrFields[k] && !fnFields[k]) fnFields[k] = ocrFields[k];
-          }
-          // 类型仍用 OCR 结果（如果比文件名更有信息量）
-          const ocrType = window.FN.docType(data._raw_text || '');
-          const finalType = (ocrType !== '发票') ? ocrType : guessedType;
-          const finalData = {
-            date: fnFields.date || data.date || '',
-            supplier: fnFields.supplier || data.supplier || '',
-            buyer: fnFields.buyer || data.buyer || '',
-            amount: fnFields.amount || data.amount || '',
-            from_station: fnFields.from_station || data.from_station || '',
-            to_station: fnFields.to_station || data.to_station || '',
-            place: fnFields.place || data.place || '',
-            sign_date: fnFields.sign_date || data.sign_date || fnFields.date || '',
-            contract_name: fnFields.contract_name || data.contract_name || '',
-            party_a: fnFields.party_a || data.party_a || fnFields.buyer || '',
-            party_b: fnFields.party_b || data.party_b || fnFields.supplier || '',
-            _raw_text: data._raw_text || '',
-          };
-          // 防止 buyer 和 supplier 重复
-          if (finalData.buyer && finalData.supplier && finalData.buyer === finalData.supplier) {
-            finalData.supplier = '';
-          }
-          const newName = FN.generateFilename(finalData, finalType, getExt(file.name));
-          // 如果 generateFilename 返回 __FALLBACK__ 标记，说明生成的文件名无意义，用原文件名
-          let finalName;
-          if (newName.startsWith('__FALLBACK__')) {
-            finalName = file.name;
-          } else {
-            finalName = newName;
-          }
-          results.push({ file, data: finalData, type: finalType, newName: finalName });
-          addRow(i, file.name, finalName, finalType, finalData);
-          continue;
-        }
-
-        const fallbackData = {
-          date: fnFields.date || '',
-          supplier: fnFields.supplier || '',
-          buyer: fnFields.buyer || '',
-          amount: '',
-          from_station: fnFields.from_station || '',
-          to_station: fnFields.to_station || '',
-          place: fnFields.place || '',
-          sign_date: fnFields.sign_date || fnFields.date || '',
-          contract_name: fnFields.contract_name || '',
-          party_a: fnFields.buyer || '',
-          party_b: fnFields.supplier || '',
-          _raw_text: '',
-        };
-        // 防止 buyer 和 supplier 重复
-        if (fallbackData.buyer && fallbackData.supplier && fallbackData.buyer === fallbackData.supplier) {
-          fallbackData.supplier = '';
-        }
-        const newName = FN.generateFilename(fallbackData, guessedType, getExt(file.name));
-        let finalName2;
-        if (newName.startsWith('__FALLBACK__')) {
-          finalName2 = file.name;
-        } else {
-          finalName2 = newName;
-        }
-        results.push({ file, data: fallbackData, type: guessedType, newName: finalName2 });
-        addRow(i, file.name, finalName2, guessedType, fallbackData);
-        continue;
+        docType = fnType;
       }
 
-      // 从文件名补充缺失字段
-      const fnFields = extractFromFilename(file.name.replace(/\.[^.]+$/, ''));
-      for (const k of ['date','invoice_number','buyer','supplier','sign_date','party_a','party_b','place','from_station','to_station']) {
-        if (!data[k] && fnFields[k]) data[k] = fnFields[k];
+      // 文件名类型覆盖规则
+      if (docType === '发票' && fnType !== '发票') {
+        docType = fnType;
       }
 
-      // 确定文档类型
-      let docType = window.FN.docType(data._raw_text || '');
-      // 若 OCR 检测类型为发票但文件名明显是其他，则覆盖
-      const guessed = guessTypeFromName(file.name);
-      if (docType === '发票' && guessed !== '发票') {
-        docType = guessed;
-      }
-      // 如果 OCR 类型是火车票但文件名是飞机票，也覆盖
-      if ((docType === '火车票' && guessed === '飞机票') ||
-          (docType === '飞机票' && guessed === '火车票')) {
-        docType = guessed;
-      }
-      // T3出行优先于火车票
-      if (docType === '火车票' && /T3出行|滴滴|曹操|网约车|打车/.test(file.name.toLowerCase())) {
+      // T3出行保护：文件名含 T3/滴滴等，绝不判为火车票
+      if (docType === '火车票' && /T3出行|滴滴|曹操|网约车|打车/i.test(file.name)) {
         docType = '打车票';
       }
 
-      const newName = FN.generateFilename(data, docType, getExt(file.name));
-      let finalNewName;
-      if (newName.startsWith('__FALLBACK__')) {
-        finalNewName = file.name;
-      } else {
-        finalNewName = newName;
+      // 飞机票 vs 火车票冲突时，文件名优先
+      if ((docType === '火车票' && fnType === '飞机票') ||
+          (docType === '飞机票' && fnType === '火车票')) {
+        docType = fnType;
       }
 
-      results.push({ file, data, type: docType, newName: finalNewName });
-      addRow(i, file.name, finalNewName, docType, data);
+      // 合同：如果 OCR 没提取到甲乙方，用文件名的 buyer/supplier
+      if (docType === '合同') {
+        if (!mergedData.party_a && mergedData.buyer) mergedData.party_a = mergedData.buyer;
+        if (!mergedData.party_b && mergedData.supplier) mergedData.party_b = mergedData.supplier;
+        // 合同不需要 buyer/supplier 字段，清空避免混淆
+        delete mergedData.buyer;
+        delete mergedData.supplier;
+      }
+
+      // 交通票：确保 from/to 存在
+      if ((docType === '飞机票' || docType === '火车票' || docType === '打车票')) {
+        if (!mergedData.from_station && fnFields.from_station) {
+          mergedData.from_station = fnFields.from_station;
+        }
+        if (!mergedData.to_station && fnFields.to_station) {
+          mergedData.to_station = fnFields.to_station;
+        }
+      }
+
+      // 确保 buyer != supplier
+      if (mergedData.buyer && mergedData.supplier && mergedData.buyer === mergedData.supplier) {
+        mergedData.supplier = '';
+      }
+      if (mergedData.party_a && mergedData.party_b && mergedData.party_a === mergedData.party_b) {
+        mergedData.party_b = '';
+      }
+
+      // 生成新文件名
+      const newName = FN.generateFilename(mergedData, docType, getExt(file.name));
+      let finalName;
+      if (newName.startsWith('__FALLBACK__')) {
+        // 只有极端情况下（完全无数据）才保留原名
+        finalName = file.name;
+        console.warn(`[${file.name}] 所有引擎均无法提取有效信息，保留原文件名`);
+      } else {
+        finalName = newName;
+      }
+
+      results.push({ file, data: mergedData, type: docType, newName: finalName });
+      addRow(i, file.name, finalName, docType, mergedData);
 
     } catch (err) {
       console.error('处理文件异常:', err);
       const stem = file.name.replace(/\.[^.]+$/, '');
       const fnFields = extractFromFilename(stem);
       const guessedType = guessTypeFromName(file.name);
-      const fallbackData = {
-        date: fnFields.date || '',
-        supplier: fnFields.supplier || '',
-        buyer: fnFields.buyer || '',
-        amount: '',
-        from_station: fnFields.from_station || '',
-        to_station: fnFields.to_station || '',
-        place: fnFields.place || '',
-        sign_date: fnFields.sign_date || fnFields.date || '',
-        contract_name: fnFields.contract_name || '',
-        party_a: fnFields.buyer || '',
-        party_b: fnFields.supplier || '',
-        _raw_text: '',
-      };
+      const fallbackData = Object.assign({}, fnFields);
+
+      if (guessedType === '合同') {
+        fallbackData.party_a = fnFields.buyer || '';
+        fallbackData.party_b = fnFields.supplier || '';
+        delete fallbackData.buyer;
+        delete fallbackData.supplier;
+      }
+
       if (fallbackData.buyer && fallbackData.supplier && fallbackData.buyer === fallbackData.supplier) {
         fallbackData.supplier = '';
       }
+
       const newName = FN.generateFilename(fallbackData, guessedType, getExt(file.name));
       let finalName;
       if (newName.startsWith('__FALLBACK__')) {
@@ -252,6 +230,7 @@ async function handleFiles(files) {
       } else {
         finalName = newName;
       }
+
       results.push({ file, data: fallbackData, type: guessedType, newName: finalName });
       addRow(i, file.name, finalName, guessedType, fallbackData);
     }
@@ -295,7 +274,7 @@ function bindDragDrop() {
     });
   }
 
-  // 拖拽：用 relatedTarget 防止子元素冒泡导致闪烁
+  // 拖拽
   let dragCounter = 0;
   dropZone.addEventListener('dragenter', e => {
     e.preventDefault();
@@ -337,7 +316,8 @@ function bindButtons() {
 
 // ---------- 表格 ----------
 function clearTable() {
-  document.querySelector('#resultTable tbody').innerHTML = '';
+  const tbody = document.querySelector('#resultTable tbody');
+  if (tbody) tbody.innerHTML = '';
 }
 
 function addRow(index, orig, renamed, type, data) {
@@ -362,7 +342,6 @@ function addRow(index, orig, renamed, type, data) {
 // 删除行
 window.deleteRow = function(index) {
   results.splice(index, 1);
-  // 重新渲染表格
   clearTable();
   results.forEach((item, i) => {
     addRow(i, item.file.name, item.newName, item.type, item.data);
@@ -401,12 +380,12 @@ window.saveEdit = function () {
 
   const docType = item.type;
   item.newName = FN.generateFilename(item.data, docType, getExt(item.file.name));
-  // 如果生成结果带 FALLBACK 标记，说明字段不足以生成有意义文件名
   if (item.newName.startsWith('__FALLBACK__')) {
-    item.newName = item.file.name; // 保持原文件名
+    item.newName = item.file.name;
   }
 
-  document.querySelector(`tr[data-index="${currentEditIndex}"] .editable`).textContent = item.newName;
+  const row = document.querySelector(`tr[data-index="${currentEditIndex}"] .editable`);
+  if (row) row.textContent = item.newName;
   closeEdit();
 };
 
