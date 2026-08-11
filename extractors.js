@@ -1,6 +1,6 @@
 /**
- * extractors.js —— v3 修复版
- * 修复：OCR失败时始终用文件名生成名称、合同名称不重复、T3不被误判
+ * extractors.js —— v4 修复版
+ * 修复：T3强制打车票(文件名优先级)、合同名称去重、OCR失败也生成名称、金额提取增强
  */
 (function (global) {
 
@@ -36,7 +36,9 @@ var CONTRACT_PARTY_B = /乙\s*方|卖\s*方|承\s*包\s*方|承\s*接\s*方|供\
 var CONTRACT_STRONG = /本\s*合\s*同|本\s*协\s*议|合\s*同\s*编\s*号|甲\s*乙\s*双\s*方|买\s*卖\s*双\s*方|合\s*同\s*金\s*额|合\s*同\s*总\s*额|合\s*同\s*总\s*价|平\s*等\s*自\s*愿|协\s*商\s*一\s*致|货\s*物\s*采\s*购\s*合\s*同|采\s*购\s*合\s*同|服\s*务\s*合\s*同|工\s*程\s*合\s*同|建\s*设\s*工\s*程\s*合\s*同/;
 var TRAIN_NUMBER_RE = /(?<![A-Z\d])([GDTZKCY]\d{1,4})(?!\d)/;
 
-function detectDocType(text) {
+function detectDocType(text, stem) {
+  // 文件名包含T3/打车/网约车等 → 强制打车票（最高优先级，防OCR噪声）
+  if (stem && /T3出行|滴滴|曹操|高德打车|美团打车|网约车|打车|出租车/.test(stem)) return '打车票';
   if (!text) return '发票';
   // T3/网约车最高优先级
   if (T3_KEYWORDS.test(text)) return '打车票';
@@ -53,8 +55,8 @@ function detectDocType(text) {
   if (hasS || (hasA && hasB)) return '合同';
   // 合同弱检测（含"合同"且有甲方或乙方）
   if (/合同|协议/.test(text) && (hasA || hasB)) return '合同';
-  // 弱车次号
-  if (TRAIN_NUMBER_RE.test(text) && !T3_KEYWORDS.test(text)) return '火车票';
+  // 弱车次号（排除文件名含打车关键词的）
+  if (TRAIN_NUMBER_RE.test(text) && !(/T3出行|滴滴|曹操|网约车|打车|出租车/.test(stem || ''))) return '火车票';
   return '发票';
 }
 
@@ -248,9 +250,12 @@ function extractInvoiceFields(text, stem) {
       /价税合计[^0-9\n]{0,10}小写[）)]*\s*[垒¥￥垩圓Y]?\s*([0-9]{1,10}\.[0-9]{2})/,
       /小写[）)]*\s*[垒¥￥垩圓Y]?\s*([0-9]{1,10}\.[0-9]{2})/,
       /价税合计[^0-9\n]{0,20}([0-9]{1,10}\.[0-9]{2})/,
-      /(?:合计|实付|应付|票价|金额)[：:\s]*[¥￥]?\s*([0-9]{1,10}\.[0-9]{2})/,
+      /(?:合计|实付|应付|票价|金额|车费)[：:\s]*[¥￥]?\s*([0-9]{1,10}(?:\.[0-9]{1,2})?)/,
       /[¥￥垩圓Y垒]\s*([0-9]{1,10}(?:\.[0-9]{1,2})?)/,
-      /(?<![0-9])([0-9]{1,10}\.[0-9]{2})(?![0-9])/
+      /(?<![0-9])([0-9]{1,10}\.[0-9]{2})(?![0-9])/,
+      // 不带小数点的金额：如 "850元" "合计 850"
+      /(?:合计|实付|应付|票价|金额|车费)[：:\s]*[¥￥]?\s*([0-9]{2,6})\s*(?:元|$|\n)/,
+      /([0-9]{2,6})\s*元/
     ];
     result.amount = findAmount(totalPats, text);
   }
@@ -467,18 +472,27 @@ function extractContractFields(text) {
   if (!result.contract_name) {
     for (var i2 = 0; i2 < Math.min(10, lines.length); i2++) {
       var c = lines[i2].replace(/[《》【】\[\]（(）)\s]+/g, '');
+      // 先去掉文件元数据后缀：原件、复印件、扫描件、(1)、(2)等
       c = c.replace(/(?:原件|复印件|扫描件|正本|副本|盖章|签字|签署)\d*$/, '');
-      // 去掉末尾的"合同""协议书"等词，只取前面的描述部分
-      var nameOnly = c.replace(/\s*(?:合同|协议书|协议)$/, '');
+      c = c.replace(/\(\d+\)$/, ''); // 去掉 (1) (2) 等编号
+      // 去掉末尾的"合同""协议书"等词
+      var nameOnly = c.replace(/\s*(?:合同|协议书|协议)$/, '').trim();
       if (nameOnly.length >= 3 && nameOnly.length <= 25 && !/^(?:合同|协议书|协议|本[合协])$/.test(nameOnly)) {
         result.contract_name = nameOnly; break;
       }
     }
   }
-  // 更宽松：合同/协议前的描述
+  // 更宽松：合同/协议前的描述（用\S+避免捕获空格）
   if (!result.contract_name) {
-    var m3 = text.match(/([\u4e00-\u9fff\w]{2,20})\s*(?:合同|协议书|协议)/);
+    var m3 = text.match(/([\u4e00-\u9fff\w]{2,20}\S*)\s*(?:合同|协议书|协议)/);
     if (m3) result.contract_name = m3[1].substring(0, 20);
+  }
+  // 最后兜底：去掉所有文件元数据后的文件名核心部分
+  if (!result.contract_name && stem) {
+    var stemClean = stem.replace(/\s*(?:合同原件|协议原件|合同|协议)\s*(?:\(\d+\))?$/i, '').trim();
+    if (stemClean.length >= 3 && stemClean.length <= 25) {
+      result.contract_name = stemClean;
+    }
   }
 
   // 签订日期
@@ -563,12 +577,17 @@ function extractContractFields(text) {
 /* ================= 从文件名补充字段 ================= */
 
 // 通用描述词黑名单
-var SKIP_WORDS = /^(发票|报销|凭证|电子|机票|行程单|订单|原件|复印件|扫描件|住宿|合同|协议|打车|电子发票)$/;
+var SKIP_WORDS = /^(发票|报销|凭证|电子|机票|行程单|订单|原件|复印件|扫描件|住宿|合同|协议|打车|电子发票|飞猪|携程|T3出行|出行)$/;
+// 地点关键词
+var PLACE_KEYWORDS = /站|路|酒店|宾馆|机场|高铁|广德|德县|城市|省|市|区|县/;
 
 function extractFromFilename(stem) {
   var result = {};
   if (!stem) return result;
-  var parts = stem.split(/[_\-\s\.]+/);
+  var parts = stem.split(/[_\-\s\.（(【《）)】》]+/);
+  // 先收集所有非停用词的中文片段，区分地点和公司名
+  var placeCandidates = [];
+  var companyCandidates = [];
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
     if (/^\d{15,25}$/.test(p)) result.invoice_number = result.invoice_number || p;
@@ -578,24 +597,34 @@ function extractFromFilename(stem) {
         result.date = result.date || (y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0'));
     }
     else if (/^(\d{1,2})[.\-](\d{1,2})$/.test(p)) {
-      var mo = parseInt(RegExp.$1), d = parseInt(RegExp.$2);
-      if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      var mo2 = parseInt(RegExp.$1), d2 = parseInt(RegExp.$2);
+      if (mo2 >= 1 && mo2 <= 12 && d2 >= 1 && d2 <= 31) {
         var year = new Date().getFullYear();
-        result.date = result.date || (year + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0'));
+        result.date = result.date || (year + '-' + String(mo2).padStart(2, '0') + '-' + String(d2).padStart(2, '0'));
       }
     }
     else if (/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.test(p)) {
-      var y = parseInt(RegExp.$1), mo = parseInt(RegExp.$2), d = parseInt(RegExp.$3);
-      if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)
-        result.date = result.date || (y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0'));
+      var y2 = parseInt(RegExp.$1), mo3 = parseInt(RegExp.$2), d3 = parseInt(RegExp.$3);
+      if (y2 >= 2000 && y2 <= 2030 && mo3 >= 1 && mo3 <= 12 && d3 >= 1 && d3 <= 31)
+        result.date = result.date || (y2 + '-' + String(mo3).padStart(2, '0') + '-' + String(d3).padStart(2, '0'));
     }
-    // 中文片段
-    else if (/[\u4e00-\u9fa5]/.test(p) && p.length >= 2) {
+    // 中文片段：区分地点 vs 公司
+    else if (/[\u4e00-\u9fa5]/.test(p) && p.length >= 2 && p.length <= 20) {
       if (SKIP_WORDS.test(p)) continue;
-      if (!result.buyer) result.buyer = p;
-      else if (!result.supplier && p !== result.buyer) result.supplier = p;
-      if (/站|路|酒店|宾馆|机场|高铁/.test(p) && !result.place) result.place = p;
+      if (PLACE_KEYWORDS.test(p)) {
+        placeCandidates.push(p);
+      } else {
+        companyCandidates.push(p);
+      }
     }
+  }
+  // 地点优先取第一个
+  if (placeCandidates.length && !result.place) result.place = placeCandidates[0];
+  // 公司名作为 buyer/supplier
+  if (companyCandidates.length) {
+    if (!result.buyer) result.buyer = companyCandidates[0];
+    if (!result.supplier && companyCandidates.length >= 2 && companyCandidates[1] !== companyCandidates[0])
+      result.supplier = companyCandidates[1];
   }
 
   // 路线模式："沈阳-上海"
@@ -608,10 +637,13 @@ function extractFromFilename(stem) {
     }
   }
 
-  // 合同名称
+  // 合同名称（去掉"合同原件(1)"等后缀）
   if (!result.contract_name) {
     var cnMatch = stem.match(/([\u4e00-\u9fa5\w]{2,20})\s*(?:合同原件|协议原件|合同|协议)/);
-    if (cnMatch) result.contract_name = cnMatch[1];
+    if (cnMatch) {
+      var cn = cnMatch[1].trim().replace(/\s*\(\d+\)\s*$/, '').trim();
+      result.contract_name = cn;
+    }
   }
 
   // buyer/supplier 不要相同
@@ -785,7 +817,8 @@ function extractFromFile(file) {
 
     function finalize(t) {
       var text = t || '';
-      var type = detectDocType(text);
+      // detectDocType 现在接受 stem 参数，内部已做 T3/打车 强制保护
+      var type = detectDocType(text, stem);
 
       // 文件名类型优先级：当OCR文本极短时，完全信任文件名判断的类型
       var fnType = guessTypeFromFilename(stem);
@@ -796,8 +829,8 @@ function extractFromFile(file) {
       if (type === '发票' && fnType !== '发票') {
         type = fnType;
       }
-      // T3出行特殊保护：文件名含T3/滴滴等，绝不判为火车票
-      if (type === '火车票' && /T3出行|滴滴|曹操|网约车|打车/i.test(stem)) {
+      // 双重保险：文件名含打车关键词 → 强制打车票
+      if (/T3出行|滴滴|曹操|网约车|打车|出租车|T3/i.test(stem)) {
         type = '打车票';
       }
 

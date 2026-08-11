@@ -1,5 +1,5 @@
 /* ============================================================
-   filenames.js —— v3 按用户四条命名规则
+   filenames.js —— v4 按用户四条命名规则
    1. 住宿/打车票：日期_销售方简写_购买方简写_类型_地点_金额元
    2. 飞机票/火车票/T3出行：日期_出发地_到达地_类型_金额元
    3. 合同：签订日期_项目名称_甲方_乙方_金额元
@@ -99,6 +99,7 @@ function genContract(data, docTypeStr, ext) {
 
 // ---------- 4️⃣ 普通发票 ----------
 // 规则：日期_销售方简写_购买方简写_金额元
+// 当上述字段都缺失时，降级为：地点_发票
 function genInvoice(data, docTypeStr, ext) {
   const date   = (data.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) ? data.date : '';
   const seller = abbrCompany(data.supplier);
@@ -107,6 +108,11 @@ function genInvoice(data, docTypeStr, ext) {
 
   const parts = [date, seller, buyer, amount].filter(Boolean);
   let name = cleanIllegal(parts.join('_'));
+  // 如果核心字段全空，尝试用地点兜底
+  if (!name) {
+    const place = abbrPlace(data.place);
+    if (place) name = place;
+  }
   if (!name) name = docTypeStr || '发票';
   return name + ext;
 }
@@ -124,9 +130,15 @@ function generateFilename(data, docTypeStr, ext) {
     result = genInvoice(data, docTypeStr, ext);
   }
 
-  // 只在极端情况下（名称完全等于类型名）才 fallback
+  // 检查结果是否有意义：如果生成结果和原始文件名stem一样（说明没有有效数据被提取），才fallback
+  // 注意：这里无法直接获取原始文件名，所以检查是否所有核心字段都为空
   var stem = result.replace(/\.[^.]+$/, '');
-  if (stem === '0000-01-01_未命名') {
+  // 检查原始数据是否有任意可用字段
+  var hasAnyData = data.date || data.sign_date || data.amount || data.price ||
+    data.buyer || data.supplier || data.party_a || data.party_b ||
+    data.contract_name || data.from_station || data.to_station ||
+    data.place || data.train_number || data.passenger_name;
+  if (!hasAnyData) {
     return '__FALLBACK__' + result;
   }
   return result;

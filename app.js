@@ -1,5 +1,5 @@
 /* ============================================================
-   app.js —— v3 主控制逻辑
+   app.js —— v4 主控制逻辑
    核心原则：OCR 失败也用文件名生成名称，绝不默认保留原名
    ============================================================ */
 
@@ -9,7 +9,7 @@ function getExt(filename) {
   return m ? m[0].toLowerCase() : '.pdf';
 }
 
-// 从文件名补充字段（增强版）
+// 从文件名补充字段（增强版 v4）
 function extractFromFilename(stem) {
   const result = {};
   const s = String(stem || '');
@@ -25,7 +25,7 @@ function extractFromFilename(stem) {
 
   // "6.8" 或 "6-8" 格式
   if (!result.date) {
-    const md = s.match(/(?:^|[\s\-_.])(\d{1,2})[.\-](\d{1,2})(?:$|[\s\-_.])/);
+    const md = s.match(/(?:^|[\s\-_.（(【《])(\d{1,2})[.\-](\d{1,2})(?:$|[\s\-_.）)】》])/);
     if (md) {
       const mo = +md[1], d = +md[2];
       if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
@@ -46,15 +46,33 @@ function extractFromFilename(stem) {
     }
   }
 
+  // 飞猪订单号中提取日期（14位订单号包含日期）
+  if (!result.date) {
+    const orderDate = s.match(/订单[号]?(\d{14})/);
+    if (orderDate) {
+      const od = orderDate[1];
+      const y = +od.substring(0, 4), mo = +od.substring(4, 6), d = +od.substring(6, 8);
+      if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+        result.date = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
+  }
+
   // 发票号
   const inv = s.match(/\b(\d{15,25})\b/);
   if (inv) result.invoice_number = inv[1];
+
+  // 金额提取（从文件名中的数字）
+  const amtMatch = s.match(/[¥￥]?\s*(\d{1,6}(?:\.\d{1,2})?)\s*元/);
+  if (amtMatch) {
+    result.amount = parseFloat(amtMatch[1]).toFixed(2);
+  }
 
   // 路线模式："沈阳-上海"
   const routeMatch = s.match(/([\u4e00-\u9fa5]{2,6})\s*[-—–~]\s*([\u4e00-\u9fa5]{2,6})/);
   if (routeMatch) {
     const from = routeMatch[1], to = routeMatch[2];
-    const skipWords = /^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件|电子|住宿|打车)/;
+    const skipWords = /^(发票|报销|凭证|订单|机票|行程单|合同|协议|原件|复印件|电子|住宿|打车|飞猪|携程)$/;
     if (!skipWords.test(from) && !skipWords.test(to)) {
       result.from_station = from;
       result.to_station = to;
@@ -64,19 +82,32 @@ function extractFromFilename(stem) {
   // 中文片段（公司名 / 地点）
   const STOP = new Set(['住宿费', '发票', '火车票', '飞机票', '打车票', '合同', '机票', '报销', '凭证',
     '电子发票', '电子', '订单', '原件', '复印件', '扫描件', '住宿', '行程单', '打车',
-    '出行', '网约车', '出租车', '火车票', '高铁', '动车', '协议', '甲方', '乙方']);
-  const cn = s.split(/[_\-\s\.]+/).filter(p => /^[\u4e00-\u9fa5]{2,20}$/.test(p) && !STOP.has(p));
+    '出行', '网约车', '出租车', '高铁', '动车', '协议', '甲方', '乙方', '飞猪', '携程']);
+  const cn = s.split(/[_\-\s\.（(【《）)】》]+/).filter(p => /^[\u4e00-\u9fa5]{2,20}$/.test(p) && !STOP.has(p));
   if (cn.length) {
     cn.sort((a, b) => b.length - a.length);
-    result.buyer = cn[0];
-    result.supplier = (cn.length >= 2 && cn[1] !== cn[0]) ? cn[1] : '';
-    const place = cn.find(p => /站|路|酒店|宾馆|机场|高铁|广德|德县/.test(p));
-    if (place) result.place = place;
+    // 判断是否有地点关键词
+    const placeIdx = cn.findIndex(p => /站|路|酒店|宾馆|机场|高铁|广德|德县|城市/.test(p));
+    if (placeIdx !== -1) {
+      result.place = cn[placeIdx];
+      // 剩余的非地点片段作为 buyer/supplier
+      const remaining = cn.filter((_, i) => i !== placeIdx);
+      if (remaining.length > 0 && !result.buyer) result.buyer = remaining[0];
+      if (remaining.length > 1 && !result.supplier && remaining[1] !== remaining[0]) result.supplier = remaining[1];
+    } else {
+      result.buyer = cn[0];
+      result.supplier = (cn.length >= 2 && cn[1] !== cn[0]) ? cn[1] : '';
+    }
   }
 
-  // 合同名称
+  // 合同名称（去掉"合同原件(1)"等后缀，只取核心名称）
   const contractMatch = s.match(/([\u4e00-\u9fa5\w]{2,20})\s*(?:合同原件|协议原件|合同|协议)/);
-  if (contractMatch) result.contract_name = contractMatch[1];
+  if (contractMatch) {
+    let cn2 = contractMatch[1].trim();
+    // 去掉 (1) (2) 等编号
+    cn2 = cn2.replace(/\s*\(\d+\)\s*$/, '').trim();
+    result.contract_name = cn2;
+  }
 
   // 防止 buyer == supplier
   if (result.buyer && result.supplier && result.buyer === result.supplier) {
@@ -137,6 +168,23 @@ async function handleFiles(files) {
         if (!mergedData[k] && fnFields[k]) mergedData[k] = fnFields[k];
       }
 
+      // 飞猪/携程订单号中提取日期（如果上面都没提取到）
+      if (!mergedData.date) {
+        const orderNum = stem.match(/订单[号]?\s*(\d{12,14})/);
+        if (orderNum) {
+          const od = orderNum[1];
+          // 尝试多种日期编码方式
+          const tries = [
+            () => { const y=2000+ +od.substring(0,2), mo=+od.substring(2,4), d=+od.substring(4,6); return (y>=2020&&y<=2030&&mo>=1&&mo<=12&&d>=1&&d<=31)?`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`:null; },
+            () => { const y=+od.substring(0,4), mo=+od.substring(4,6), d=+od.substring(6,8); return (y>=2020&&y<=2030&&mo>=1&&mo<=12&&d>=1&&d<=31)?`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`:null; }
+          ];
+          for (const tryFn of tries) {
+            const r = tryFn();
+            if (r) { mergedData.date = r; break; }
+          }
+        }
+      }
+
       // 如果 OCR 有 amount 但格式不标准，优先用 OCR 的
       if (!data.amount && fnFields.amount) mergedData.amount = fnFields.amount;
 
@@ -153,8 +201,8 @@ async function handleFiles(files) {
         docType = fnType;
       }
 
-      // T3出行保护：文件名含 T3/滴滴等，绝不判为火车票
-      if (docType === '火车票' && /T3出行|滴滴|曹操|网约车|打车/i.test(file.name)) {
+      // T3出行/打车保护：文件名含打车关键词 → 强制打车票（任何情况都不例外）
+      if (/T3出行|T3|滴滴|曹操|高德打车|美团打车|网约车|打车|出租车/i.test(file.name)) {
         docType = '打车票';
       }
 
