@@ -1,4 +1,4 @@
-// app.js —— 精简主逻辑
+// app.js —— 增加 OCR 结果展示
 function getExt(f) { let m=String(f).match(/\.[^.]+$/); return m?m[0].toLowerCase():'.pdf'; }
 
 function guessType(name) {
@@ -12,6 +12,7 @@ function guessType(name) {
 }
 
 let results=[];
+
 async function handleFiles(files) {
   let list=Array.from(files).filter(f=>/\.(pdf|jpg|jpeg|png|bmp|docx|doc)$/i.test(f.name));
   if(!list.length) return toast('请选择支持的文件');
@@ -24,38 +25,42 @@ async function handleFiles(files) {
       if(!data._raw_text || data._raw_text.length<20) type=fnType;
       if(/T3出行|滴滴|打车/.test(file.name)) type='打车票';
       if(type==='发票' && fnType!=='发票') type=fnType;
-      // 确保日期
       if(!data.date && !data.sign_date) data.date='0000-01-01';
       let newName=FN.generateFilename(data, type, getExt(file.name));
-      results.push({file,data,type,newName});
-      addRow(i,file.name,newName,type,data);
+      // 截取 OCR 文本前50字符作为预览
+      let ocrPreview = (data._raw_text || '').substring(0, 100).replace(/\n/g,' ') + (data._raw_text.length>100?'...':'');
+      results.push({file,data,type,newName, ocrPreview});
+      addRow(i,file.name,newName,type,data, ocrPreview);
     } catch(e) {
+      console.error(e);
       let stem=file.name.replace(/\.[^.]+$/,'');
       let fn=EX.extractFromFilename(stem);
       let type=guessType(file.name);
       let data={date:fn.date||'0000-01-01', buyer:fn.buyer, supplier:fn.supplier, place:fn.place, from_station:fn.from_station, to_station:fn.to_station, contract_name:fn.contract_name, party_a:fn.buyer, party_b:fn.supplier, amount:fn.amount};
       let newName=FN.generateFilename(data, type, getExt(file.name));
-      results.push({file,data,type,newName});
-      addRow(i,file.name,newName,type,data);
+      results.push({file,data,type,newName, ocrPreview:'OCR失败'});
+      addRow(i,file.name,newName,type,data, 'OCR失败');
     }
   }
   hideProgress();
 }
 
-// DOM 函数（略，与之前相同，但可精简，此处提供核心）
 function clearTable(){ document.querySelector('#resultTable tbody').innerHTML=''; }
-function addRow(i,orig,renamed,type,data){ let tr=document.createElement('tr'); tr.dataset.index=i; tr.innerHTML=`<td>${orig}</td><td class="editable" onclick="editRow(${i})">${renamed}</td><td>${type}</td><td>${data.date||data.sign_date||''}</td><td>${data.amount||''}</td><td><button class="btn-small" onclick="deleteRow(${i})">删除</button></td>`; document.querySelector('#resultTable tbody').appendChild(tr); }
+function addRow(i,orig,renamed,type,data,ocrText){
+  let tr=document.createElement('tr'); tr.dataset.index=i;
+  tr.innerHTML=`<td>${orig}</td><td class="editable" onclick="editRow(${i})">${renamed}</td><td>${type}</td><td>${data.date||data.sign_date||''}</td><td>${data.amount||''}</td><td style="max-width:150px;font-size:11px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${ocrText}">${ocrText}</td><td><button class="btn-small" onclick="deleteRow(${i})">删除</button></td>`;
+  document.querySelector('#resultTable tbody').appendChild(tr);
+}
+// ... 编辑、删除、进度、Toast 等函数不变，沿用之前的
+// 为了完整性，我把它们复制过来
 window.editRow=function(i){ let item=results[i]; if(!item)return; document.getElementById('editOrig').value=item.file.name; document.getElementById('editNew').value=item.newName; document.getElementById('editDate').value=item.data.date||item.data.sign_date||''; document.getElementById('editAmount').value=item.data.amount||''; document.getElementById('editBuyer').value=item.data.buyer||item.data.party_a||''; document.getElementById('editSupplier').value=item.data.supplier||item.data.party_b||''; document.getElementById('editPlace').value=item.data.place||item.data.from_station||''; document.getElementById('editModal').classList.remove('hidden'); };
 window.saveEdit=function(){ let item=results[currentEditIndex]; if(!item)return; item.data.date=document.getElementById('editDate').value; item.data.sign_date=document.getElementById('editDate').value; item.data.amount=document.getElementById('editAmount').value; item.data.buyer=document.getElementById('editBuyer').value; item.data.supplier=document.getElementById('editSupplier').value; item.data.place=document.getElementById('editPlace').value; item.data.party_a=document.getElementById('editBuyer').value; item.data.party_b=document.getElementById('editSupplier').value; let type=item.type; item.newName=FN.generateFilename(item.data,type,getExt(item.file.name)); document.querySelector(`tr[data-index="${currentEditIndex}"] .editable`).textContent=item.newName; closeEdit(); };
 window.closeEdit=function(){ document.getElementById('editModal').classList.add('hidden'); };
-window.deleteRow=function(i){ results.splice(i,1); clearTable(); results.forEach((item,idx)=>{ addRow(idx,item.file.name,item.newName,item.type,item.data); }); };
-
-// 进度、Toast
+window.deleteRow=function(i){ results.splice(i,1); clearTable(); results.forEach((item,idx)=>{ addRow(idx,item.file.name,item.newName,item.type,item.data,item.ocrPreview||''); }); };
 function updateProgress(c,t,n){ let bar=document.getElementById('progress'); if(!bar)return; bar.classList.remove('hidden'); bar.textContent=`(${c}/${t}) ${n}`; }
 function hideProgress(){ let bar=document.getElementById('progress'); if(bar)bar.classList.add('hidden'); }
 function toast(msg){ let t=document.getElementById('toast'); if(!t)return; t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),2500); }
 
-// 事件绑定
 document.addEventListener('DOMContentLoaded',()=>{
   let input=document.getElementById('fileInput');
   if(input) input.addEventListener('change',e=>handleFiles(e.target.files));
