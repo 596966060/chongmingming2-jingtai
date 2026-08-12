@@ -39,9 +39,9 @@
 
   <!-- 统计信息 -->
   <div class="stats-bar" id="statsBar" style="display:none;">
-    <span class="stat-item stat-invoice"> 发票: <span class="stat-num" id="statInvoice">0</span></span>
-    <span class="stat-item stat-train"> 火车票: <span class="stat-num" id="statTrain">0</span></span>
-    <span class="stat-item stat-contract"> 合同: <span class="stat-num" id="statContract">0</span></span>
+    <span class="stat-item stat-invoice">🧾 发票: <span class="stat-num" id="statInvoice">0</span></span>
+    <span class="stat-item stat-train">🚄 火车票: <span class="stat-num" id="statTrain">0</span></span>
+    <span class="stat-item stat-contract">📋 合同: <span class="stat-num" id="statContract">0</span></span>
     <span class="stat-item stat-error">⚠️ 失败: <span class="stat-num" id="statError">0</span></span>
   </div>
 
@@ -55,14 +55,15 @@
           <th>类型</th>
           <th>日期</th>
           <th>金额</th>
+          <th>OCR结果</th>    <!-- 新增列 -->
           <th>操作</th>
         </tr>
       </thead>
       <tbody id="resultBody">
         <tr>
-          <td colspan="6">
+          <td colspan="7">   <!-- 原6改为7 -->
             <div class="empty-state">
-              <span class="empty-icon"></span>
+              <span class="empty-icon">📄</span>
               <p>还没有文件，请拖拽或选择文件开始识别</p>
             </div>
           </td>
@@ -73,8 +74,8 @@
 
   <!-- 操作按钮 -->
   <div class="actions">
-    <button id="downloadZip" class="btn-primary"> 下载 ZIP</button>
-    <button id="downloadCsv" class="btn-secondary"> 下载 CSV</button>
+    <button id="downloadZip" class="btn-primary">📦 下载 ZIP</button>
+    <button id="downloadCsv" class="btn-secondary">📊 下载 CSV</button>
     <button id="downloadExcel" class="btn-secondary">📈 下载 Excel</button>
   </div>
 
