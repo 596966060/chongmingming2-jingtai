@@ -1,7 +1,6 @@
-// extractors.js —— 增强 OCR，集成 OCR.space API
+// extractors.js —— 完整版（含 OCR.space 备选，强化日期提取）
 (function (global) {
-  // ---------- OCR.space 配置 ----------
-  const OCR_SPACE_KEY = 'K82948800688957'; // 免费密钥，每天500次
+  const OCR_SPACE_KEY = 'K82948800688957';
 
   // 图像预处理（CLAHE）
   function preprocess(canvas) {
@@ -30,13 +29,13 @@
     return canvas;
   }
 
-  // Tesseract OCR（浏览器）
+  // Tesseract OCR
   function ocrTesseract(canvas) {
     if (!global.Tesseract) return Promise.reject('Tesseract not loaded');
     return global.Tesseract.recognize(canvas, 'chi_sim+eng').then(r => r.data.text || '');
   }
 
-  // OCR.space API（免费，支持中文）
+  // OCR.space API
   function ocrSpace(file, engine = '1') {
     return new Promise((resolve) => {
       let form = new FormData();
@@ -67,14 +66,11 @@
       let ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0);
       preprocess(canvas);
-      // 先尝试 Tesseract
       return ocrTesseract(canvas).then(tessText => {
         let best = tessText.trim();
-        // 如果 Tesseract 结果太短，调用 OCR.space
         if (best.length < 50) {
           return ocrSpace(file, '1').then(spaceText => {
             if (spaceText.length > best.length) best = spaceText;
-            // 如果还短，尝试引擎2（算法不同）
             if (best.length < 50) {
               return ocrSpace(file, '2').then(space2 => {
                 if (space2.length > best.length) best = space2;
@@ -89,7 +85,7 @@
     });
   }
 
-  // PDF 转文本（使用 Tesseract，也可接入 OCR.space，但此处保持 PDF 用 Tesseract）
+  // PDF 转文本（使用 Tesseract）
   function pdfToText(file) {
     return new Promise((res, rej) => {
       if (!global.pdfjsLib) rej('PDF.js not loaded');
@@ -122,46 +118,68 @@
     });
   }
 
-  // ---------- 从文件名提取字段（强化日期） ----------
+  // ============ 核心：从文件名提取字段（强化日期） ============
   function extractFromFilename(stem) {
     let r = {};
     if (!stem) return r;
-    let parts = stem.split(/[_\-\s.（(【《】）)】]+/);
-    // 日期提取
-    for (let p of parts) {
-      let m;
-      // 8位日期 20250608
-      if (m = p.match(/^20(\d{2})(\d{2})(\d{2})$/)) {
-        r.date = `20${m[1]}-${m[2]}-${m[3]}`;
-        break;
-      }
-      // 6.8 或 6-8
-      if (m = p.match(/^(\d{1,2})[.\-](\d{1,2})$/)) {
-        let y = new Date().getFullYear();
-        r.date = `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
-        break;
-      }
-      // 2025-06-08
-      if (m = p.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/)) {
-        r.date = `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
-        break;
-      }
-    }
-    // 飞猪订单号（14位数字）提取日期
-    if (!r.date) {
-      let od = stem.match(/订单[号]?\s*(\d{14})/);
-      if (od) {
-        let s = od[1];
-        let y = parseInt(s.substring(0,4)), mo = parseInt(s.substring(4,6)), d = parseInt(s.substring(6,8));
-        if (y>=2000 && y<=2030 && mo>=1 && mo<=12 && d<=31) {
+    let dateMatch = null;
+
+    // 1. 8位日期 20250608
+    dateMatch = stem.match(/\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b/);
+    if (dateMatch) {
+      r.date = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+    } else {
+      // 2. 2025-06-08 或 2025/06/08
+      dateMatch = stem.match(/\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b/);
+      if (dateMatch) {
+        let y = +dateMatch[1], mo = +dateMatch[2], d = +dateMatch[3];
+        if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d <= 31) {
           r.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        }
+      } else {
+        // 3. 6.8 或 6-8
+        dateMatch = stem.match(/(?:^|[^0-9])(\d{1,2})[.\-](\d{1,2})(?:$|[^0-9])/);
+        if (dateMatch) {
+          let mo = +dateMatch[1], d = +dateMatch[2];
+          if (mo >= 1 && mo <= 12 && d <= 31) {
+            let y = new Date().getFullYear();
+            r.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          }
+        } else {
+          // 4. 飞猪订单号（14位数字） 或订单号中的日期
+          dateMatch = stem.match(/订单[号]?\s*(\d{12,14})/);
+          if (dateMatch) {
+            let s = dateMatch[1];
+            if (s.length >= 8) {
+              let y = parseInt(s.substring(0,4)), mo = parseInt(s.substring(4,6)), d = parseInt(s.substring(6,8));
+              if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d <= 31) {
+                r.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+              }
+            }
+            // 如果上面失败，尝试中间8位
+            if (!r.date && s.length >= 12) {
+              let y = parseInt(s.substring(2,6)), mo = parseInt(s.substring(6,8)), d = parseInt(s.substring(8,10));
+              if (y >= 2000 && y <= 2030 && mo >= 1 && mo <= 12 && d <= 31) {
+                r.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+              }
+            }
+          }
         }
       }
     }
-    // 路线
+
+    // 如果还是没有日期，使用当前日期
+    if (!r.date) {
+      let now = new Date();
+      r.date = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    }
+
+    // 提取路线
     let route = stem.match(/([\u4e00-\u9fa5]{2,6})\s*[-—–~]\s*([\u4e00-\u9fa5]{2,6})/);
     if (route) { r.from_station = route[1]; r.to_station = route[2]; }
-    // 中文词
+
+    // 提取中文词
+    let parts = stem.split(/[_\-\s.（(【《】）)】]+/);
     let words = parts.filter(p => /[\u4e00-\u9fa5]/.test(p) && p.length>=2 && !['发票','住宿费','火车票','飞机票','打车票','合同','机票','报销','凭证','电子','原件','复印件','扫描件','订单','飞猪','携程','T3出行','滴滴','曹操','网约车','出租车','高铁','动车','列车','车次'].includes(p));
     if (words.length) {
       let place = words.find(w => /站|路|酒店|宾馆|机场|高铁|广德|德县|城市|省|市|区|县/.test(w));
@@ -175,10 +193,11 @@
     let amt = stem.match(/[¥￥]?\s*(\d{1,6}(?:\.\d{1,2})?)\s*元/);
     if (amt) r.amount = parseFloat(amt[1]).toFixed(2);
     else { let num = stem.match(/\b(\d{2,5}\.\d{1,2})\b/); if (num) r.amount = parseFloat(num[1]).toFixed(2); }
+
     return r;
   }
 
-  // ---------- 类型判断 ----------
+  // ============ 类型判断 ============
   function detectType(text, stem) {
     let s = (stem || '').toLowerCase();
     if (/T3出行|滴滴|曹操|网约车|打车|出租车/.test(s)) return '打车票';
@@ -195,7 +214,7 @@
     return '发票';
   }
 
-  // ---------- 字段抽取（简化） ----------
+  // ============ 字段抽取 ============
   function extractInvoice(text) {
     let r = { date: null, buyer: null, supplier: null, amount: null, place: null };
     let m = text.match(/(?:开票日期|日期)[：:\s]*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})/);
@@ -228,7 +247,7 @@
     return r;
   }
 
-  // ---------- 主入口 ----------
+  // ============ 主入口 ============
   function extractFromFile(file) {
     return new Promise((resolve) => {
       let stem = file.name.replace(/\.[^.]+$/, ''),
