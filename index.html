@@ -55,13 +55,13 @@
           <th>类型</th>
           <th>日期</th>
           <th>金额</th>
-          <th>OCR结果</th>    <!-- 新增列 -->
+          <th>OCR结果</th>
           <th>操作</th>
         </tr>
       </thead>
       <tbody id="resultBody">
         <tr>
-          <td colspan="7">   <!-- 原6改为7 -->
+          <td colspan="7">
             <div class="empty-state">
               <span class="empty-icon">📄</span>
               <p>还没有文件，请拖拽或选择文件开始识别</p>
@@ -109,15 +109,14 @@
 <!-- Toast 提示 -->
 <div id="toast" class="toast hidden"></div>
 
-<!-- ========== 第三方库（按依赖顺序） ========== -->
+<!-- ========== 第三方库 ========== -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs" type="module"></script>
-<!-- mammoth.js for DOCX parsing -->
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 
-<!-- ========== 业务脚本（非模块，全局变量，按依赖顺序） ========== -->
+<!-- ========== 业务脚本 ========== -->
 <script src="filenames.js"></script>
 <script src="extractors.js"></script>
 <script src="export.js"></script>
