@@ -1,3 +1,25 @@
+<thead>
+  <tr>
+    <th>原文件名</th>
+    <th>新文件名</th>
+    <th>类型</th>
+    <th>日期</th>
+    <th>金额</th>
+    <th>OCR结果</th>
+    <th>操作</th>
+  </tr>
+</thead>
+
+<!-- 高精度开关 -->
+<div class="settings-bar">
+  <label class="hp-label">
+    <input type="checkbox" id="highPrecisionToggle">
+    <span>🎯 高精度模式（EasyOCR 后端补刀）</span>
+  </label>
+  <input type="text" id="highPrecisionUrl" class="hp-url" placeholder="粘贴后端地址，如 https://xxx.onrender.com">
+  <button id="testBackendBtn" class="btn-secondary" style="padding:4px 12px;font-size:12px;">测试连接</button>
+</div>
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
